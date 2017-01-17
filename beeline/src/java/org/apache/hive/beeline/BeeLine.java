@@ -1183,12 +1183,12 @@ public class BeeLine implements Closeable {
     }
 
     this.history = new FileHistory(new File(getOpts().getHistoryFile()));
+    this.history.setMaxSize(getOpts().getMaxHistoryRows());
     // add shutdown hook to flush the history to history file
     ShutdownHookManager.addShutdownHook(new Runnable() {
       @Override
       public void run() {
         try {
-          h.setMaxSize(getOpts().getMaxHistoryRows());
           history.flush();
         } catch (IOException e) {
           error(e);

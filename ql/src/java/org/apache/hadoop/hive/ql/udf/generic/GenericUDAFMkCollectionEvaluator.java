@@ -115,10 +115,8 @@ public class GenericUDAFMkCollectionEvaluator extends GenericUDAFEvaluator
     assert (parameters.length == 1);
     Object p = parameters[0];
 
-    if (p != null) {
-      MkArrayAggregationBuffer myagg = (MkArrayAggregationBuffer) agg;
-      putIntoCollection(p, myagg);
-    }
+    MkArrayAggregationBuffer myagg = (MkArrayAggregationBuffer) agg;
+    putIntoCollection(p, myagg);
   }
 
   //mapside

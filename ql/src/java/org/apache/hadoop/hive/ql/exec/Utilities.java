@@ -43,6 +43,7 @@ import org.apache.hadoop.hive.common.HiveInterruptUtils;
 import org.apache.hadoop.hive.common.HiveStatsUtils;
 import org.apache.hadoop.hive.common.JavaUtils;
 import org.apache.hadoop.hive.common.StatsSetupConst;
+import org.apache.hadoop.hive.common.StringInternUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.metastore.MetaStoreUtils;
@@ -227,6 +228,9 @@ public final class Utilities {
   public static final String USE_VECTORIZED_INPUT_FILE_FORMAT = "USE_VECTORIZED_INPUT_FILE_FORMAT";
   public static String MAPNAME = "Map ";
   public static String REDUCENAME = "Reducer ";
+
+  @Deprecated
+  protected static String DEPRECATED_MAPRED_DFSCLIENT_PARALLELISM_MAX = "mapred.dfsclient.parallelism.max";
 
   /**
    * ReduceField:
@@ -2069,6 +2073,41 @@ public final class Utilities {
   private static final Object INPUT_SUMMARY_LOCK = new Object();
 
   /**
+   * Returns the maximum number of executors required to get file information from several input locations.
+   * It checks whether HIVE_EXEC_INPUT_LISTING_MAX_THREADS or DEPRECATED_MAPRED_DFSCLIENT_PARALLELISM_MAX are > 1
+   *
+   * @param conf Configuration object to get the maximum number of threads.
+   * @param inputLocationListSize Number of input locations required to process.
+   * @return The maximum number of executors to use.
+   */
+  @VisibleForTesting
+  static int getMaxExecutorsForInputListing(final Configuration conf, int inputLocationListSize) {
+    if (inputLocationListSize < 1) return 0;
+
+    int maxExecutors = 1;
+
+    if (inputLocationListSize > 1) {
+      int listingMaxThreads = HiveConf.getIntVar(conf, ConfVars.HIVE_EXEC_INPUT_LISTING_MAX_THREADS);
+
+      // DEPRECATED_MAPRED_DFSCLIENT_PARALLELISM_MAX must be removed on next Hive version (probably on 3.0).
+      // If HIVE_EXEC_INPUT_LISTING_MAX_THREADS is not set, then we check of the deprecated configuration.
+      if (listingMaxThreads <= 0) {
+        listingMaxThreads = conf.getInt(DEPRECATED_MAPRED_DFSCLIENT_PARALLELISM_MAX, 0);
+        if (listingMaxThreads > 0) {
+          LOG.warn("Deprecated configuration is used: " + DEPRECATED_MAPRED_DFSCLIENT_PARALLELISM_MAX +
+              ". Please use " + ConfVars.HIVE_EXEC_INPUT_LISTING_MAX_THREADS.varname);
+        }
+      }
+
+      if (listingMaxThreads > 1) {
+        maxExecutors = Math.min(inputLocationListSize, listingMaxThreads);
+      }
+    }
+
+    return maxExecutors;
+  }
+
+  /**
    * Calculate the total size of input files.
    *
    * @param ctx
@@ -2117,9 +2156,9 @@ public final class Utilities {
       final Map<String, ContentSummary> resultMap = new ConcurrentHashMap<String, ContentSummary>();
       ArrayList<Future<?>> results = new ArrayList<Future<?>>();
       final ExecutorService executor;
-      int maxThreads = ctx.getConf().getInt("mapred.dfsclient.parallelism.max", 0);
-      if (pathNeedProcess.size() > 1 && maxThreads > 1) {
-        int numExecutors = Math.min(pathNeedProcess.size(), maxThreads);
+
+      int numExecutors = getMaxExecutorsForInputListing(ctx.getConf(), pathNeedProcess.size());
+      if (numExecutors > 1) {
         LOG.info("Using " + numExecutors + " threads for getContentSummary");
         executor = Executors.newFixedThreadPool(numExecutors,
             new ThreadFactoryBuilder().setDaemon(true)
@@ -2978,19 +3017,6 @@ public final class Utilities {
   public static List<Path> getInputPaths(JobConf job, MapWork work, Path hiveScratchDir,
       Context ctx, boolean skipDummy) throws Exception {
 
-    int numThreads = job.getInt("mapred.dfsclient.parallelism.max", 0);
-    ExecutorService pool = null;
-    if (numThreads > 1) {
-      pool = Executors.newFixedThreadPool(numThreads,
-              new ThreadFactoryBuilder().setDaemon(true).setNameFormat("Get-Input-Paths-%d").build());
-    }
-    return getInputPaths(job, work, hiveScratchDir, ctx, skipDummy, pool);
-  }
-
-  @VisibleForTesting
-  static List<Path> getInputPaths(JobConf job, MapWork work, Path hiveScratchDir,
-      Context ctx, boolean skipDummy, ExecutorService pool) throws Exception {
-
     Set<Path> pathsProcessed = new HashSet<Path>();
     List<Path> pathsToAdd = new LinkedList<Path>();
     // AliasToWork contains all the aliases
@@ -3017,6 +3043,7 @@ public final class Utilities {
             continue;
           }
 
+          StringInternUtils.internUriStringsInPath(file);
           pathsProcessed.add(file);
 
           if (LOG.isDebugEnabled()) {
@@ -3041,6 +3068,13 @@ public final class Utilities {
       if (isEmptyTable && !skipDummy) {
         pathsToAdd.add(createDummyFileForEmptyTable(job, work, hiveScratchDir, alias));
       }
+    }
+
+    ExecutorService pool = null;
+    int numExecutors = getMaxExecutorsForInputListing(job, pathsToAdd.size());
+    if (numExecutors > 1) {
+      pool = Executors.newFixedThreadPool(numExecutors,
+          new ThreadFactoryBuilder().setDaemon(true).setNameFormat("Get-Input-Paths-%d").build());
     }
 
     List<Path> finalPathsToAdd = new LinkedList<>();
@@ -3118,7 +3152,7 @@ public final class Utilities {
     }
     recWriter.close(false);
 
-    return newPath;
+    return StringInternUtils.internUriStringsInPath(newPath);
   }
 
   @SuppressWarnings("rawtypes")
@@ -3141,15 +3175,13 @@ public final class Utilities {
 
     boolean oneRow = partDesc.getInputFileFormatClass() == OneNullRowInputFormat.class;
 
-    Path newPath = createEmptyFile(hiveScratchDir, outFileFormat, job,
-        props, oneRow);
+    Path newPath = createEmptyFile(hiveScratchDir, outFileFormat, job, props, oneRow);
 
     if (LOG.isInfoEnabled()) {
       LOG.info("Changed input file " + strPath + " to empty file " + newPath + " (" + oneRow + ")");
     }
 
     // update the work
-    String strNewPath = newPath.toString();
 
     work.addPathToAlias(newPath, work.getPathToAliases().get(path));
     work.removePathToAlias(path);
@@ -3174,8 +3206,7 @@ public final class Utilities {
     Properties props = tableDesc.getProperties();
     HiveOutputFormat outFileFormat = HiveFileFormatUtils.getHiveOutputFormat(job, tableDesc);
 
-    Path newPath = createEmptyFile(hiveScratchDir, outFileFormat, job,
-        props, false);
+    Path newPath = createEmptyFile(hiveScratchDir, outFileFormat, job, props, false);
 
     if (LOG.isInfoEnabled()) {
       LOG.info("Changed input file for alias " + alias + " to " + newPath);

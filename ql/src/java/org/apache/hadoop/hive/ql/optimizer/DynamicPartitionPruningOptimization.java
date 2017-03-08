@@ -239,7 +239,6 @@ public class DynamicPartitionPruningOptimization implements NodeProcessor {
           betweenArgs.add(new ExprNodeDynamicValueDesc(new DynamicValue(keyBaseAlias + "_max", ctx.desc.getTypeInfo())));
           ExprNodeDesc betweenNode = ExprNodeGenericFuncDesc.newInstance(
                   FunctionRegistry.getFunctionInfo("between").getGenericUDF(), betweenArgs);
-          replaceExprNode(ctx, desc, betweenNode);
           // add column expression for bloom filter
           List<ExprNodeDesc> bloomFilterArgs = new ArrayList<ExprNodeDesc>();
           bloomFilterArgs.add(ctx.parent.getChildren().get(0));
@@ -249,10 +248,12 @@ public class DynamicPartitionPruningOptimization implements NodeProcessor {
           ExprNodeDesc bloomFilterNode = ExprNodeGenericFuncDesc.newInstance(
                   FunctionRegistry.getFunctionInfo("in_bloom_filter").
                           getGenericUDF(), bloomFilterArgs);
-          // ctx may not have the grandparent but it is set in filterDesc by now.
-          ExprNodeDesc grandParent = ctx.grandParent == null ?
-                  desc.getPredicate() : ctx.grandParent;
-          grandParent.getChildren().add(bloomFilterNode);
+          List<ExprNodeDesc> andArgs = new ArrayList<ExprNodeDesc>();
+          andArgs.add(betweenNode);
+          andArgs.add(bloomFilterNode);
+          ExprNodeDesc andExpr = ExprNodeGenericFuncDesc.newInstance(
+              FunctionRegistry.getFunctionInfo("and").getGenericUDF(), andArgs);
+          replaceExprNode(ctx, desc, andExpr);
         } else {
           ExprNodeDesc replaceNode = new ExprNodeConstantDesc(ctx.parent.getTypeInfo(), true);
           replaceExprNode(ctx, desc, replaceNode);
@@ -585,6 +586,14 @@ public class DynamicPartitionPruningOptimization implements NodeProcessor {
             groupByDescFinal, new RowSchema(rsOp.getSchema()), rsOp);
     groupByOpFinal.setColumnExprMap(new HashMap<String, ExprNodeDesc>());
 
+    // for explain purpose
+    if (parseContext.getContext().getExplainConfig() != null
+        && parseContext.getContext().getExplainConfig().isFormatted()) {
+      List<String> outputOperators = new ArrayList<>();
+      outputOperators.add(groupByOpFinal.getOperatorId());
+      rsOp.getConf().setOutputOperators(outputOperators);
+    }
+
     // Create the final Reduce Sink Operator
     ReduceSinkDesc rsDescFinal = PlanUtils.getReduceSinkDesc(
             new ArrayList<ExprNodeDesc>(), rsValueCols, gbOutputNames, false,
@@ -595,6 +604,14 @@ public class DynamicPartitionPruningOptimization implements NodeProcessor {
 
     LOG.debug("DynamicMinMaxPushdown: Saving RS to TS mapping: " + rsOpFinal + ": " + ts);
     parseContext.getRsOpToTsOpMap().put(rsOpFinal, ts);
+
+    // for explain purpose
+    if (parseContext.getContext().getExplainConfig() != null
+        && parseContext.getContext().getExplainConfig().isFormatted()) {
+      List<String> outputOperators = new ArrayList<>();
+      outputOperators.add(ts.getOperatorId());
+      rsOpFinal.getConf().setOutputOperators(outputOperators);
+    }
 
     // Save the info that is required at query time to resolve dynamic/runtime values.
     RuntimeValuesInfo runtimeValuesInfo = new RuntimeValuesInfo();

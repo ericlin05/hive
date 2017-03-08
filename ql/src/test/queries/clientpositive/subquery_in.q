@@ -57,18 +57,18 @@ part where part.p_size in
 
 -- agg, corr
 explain
-select p_mfgr, p_name, p_size 
-from part b where b.p_size in 
-	(select min(p_size) 
-	 from (select p_mfgr, p_size, rank() over(partition by p_mfgr order by p_size) as r from part) a 
+select p_mfgr, p_name, p_size
+from part b where b.p_size in
+	(select min(p_size)
+	 from (select p_mfgr, p_size, rank() over(partition by p_mfgr order by p_size) as r from part) a
 	 where r <= 2 and b.p_mfgr = a.p_mfgr
 	)
 ;
 
-select p_mfgr, p_name, p_size 
-from part b where b.p_size in 
-	(select min(p_size) 
-	 from (select p_mfgr, p_size, rank() over(partition by p_mfgr order by p_size) as r from part) a 
+select p_mfgr, p_name, p_size
+from part b where b.p_size in
+	(select min(p_size)
+	 from (select p_mfgr, p_size, rank() over(partition by p_mfgr order by p_size) as r from part) a
 	 where r <= 2 and b.p_mfgr = a.p_mfgr
 	)
 ;
@@ -127,8 +127,8 @@ select sum(l_extendedprice) from lineitem, part where p_partkey = l_partkey and 
 
 
 --where has multiple conjuction
-explain select * from part where p_brand <> 'Brand#14' AND p_size IN (select min(p_size) from part p where p.p_type = part.p_type group by p_type) AND p_size <> 340;
-select * from part where p_brand <> 'Brand#14' AND p_size IN (select min(p_size) from part p where p.p_type = part.p_type group by p_type) AND p_size <> 340;
+explain select * from part where p_brand <> 'Brand#14' AND p_size IN (select (p_size) from part p where p.p_type = part.p_type group by p_size) AND p_size <> 340;
+select * from part where p_brand <> 'Brand#14' AND p_size IN (select (p_size) from part p where p.p_type = part.p_type group by p_size) AND p_size <> 340;
 
 --lhs contains non-simple expression
 explain select * from part  where (p_size-1) IN (select min(p_size) from part group by p_type);
@@ -206,8 +206,38 @@ explain select p_partkey from
 select p_partkey from 
 	(select p_size, p_partkey from part where p_name in (select p.p_name from part p left outer join part pp on p.p_type = pp.p_type where pp.p_size = part.p_size)) subq;
 
+-- corr IN with COUNT aggregate
+explain select * from part where p_size IN (select count(*) from part pp where pp.p_type = part.p_type);
+select * from part where p_size IN (select count(*) from part pp where pp.p_type = part.p_type);
+
+-- corr IN with aggregate other than COUNT
+explain select * from part where p_size in (select avg(pp.p_size) from part pp where pp.p_partkey = part.p_partkey);
+select * from part where p_size in (select avg(pp.p_size) from part pp where pp.p_partkey = part.p_partkey);
+
+-- corr IN with aggregate other than COUNT (MIN) with non-equi join
+explain select * from part where p_size in (select min(pp.p_size) from part pp where pp.p_partkey > part.p_partkey);
+select * from part where p_size in (select min(pp.p_size) from part pp where pp.p_partkey > part.p_partkey);
+
+-- corr IN with COUNT aggregate
+explain select * from part where p_size NOT IN (select count(*) from part pp where pp.p_type = part.p_type);
+select * from part where p_size NOT IN (select count(*) from part pp where pp.p_type = part.p_type);
+
+-- corr IN with aggregate other than COUNT
+explain select * from part where p_size not in (select avg(pp.p_size) from part pp where pp.p_partkey = part.p_partkey);
+select * from part where p_size not in (select avg(pp.p_size) from part pp where pp.p_partkey = part.p_partkey);
+
+create table t(i int);
+insert into t values(1);
+insert into t values(0);
 
 create table tempty(i int);
+
+-- uncorr sub with aggregate which produces result irrespective of zero rows
+explain select * from t where i IN (select count(*) from tempty);
+select * from t where i IN (select count(*) from tempty);
+
+drop table t;
+
 create table tnull(i int);
 insert into tnull values(NULL) , (NULL);
 
@@ -224,3 +254,16 @@ select * from part where p_size IN (select i from tnull);
 select * from tnull where i IN (select i from tnull);
 
 drop table tempty;
+
+create table t(i int, j int);
+insert into t values(0,1), (0,2);
+
+create table tt(i int, j int);
+insert into tt values(0,3);
+
+-- corr IN with aggregate other than COUNT return zero rows
+explain select * from t where i IN (select sum(i) from tt where tt.j = t.j);
+select * from t where i IN (select sum(i) from tt where tt.j = t.j);
+
+drop table t;
+drop table tt;

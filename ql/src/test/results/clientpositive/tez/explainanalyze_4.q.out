@@ -16,8 +16,7 @@ order by a.cint
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@alltypesorc
 #### A masked pattern was here ####
-PREHOOK: query: -- First try with regular mergejoin
-explain analyze
+PREHOOK: query: explain analyze
 select
   *
 from alltypesorc a join alltypesorc b on a.cint = b.cint
@@ -25,8 +24,7 @@ where
   a.cint between 1000000 and 3000000 and b.cbigint is not null
 order by a.cint
 PREHOOK: type: QUERY
-POSTHOOK: query: -- First try with regular mergejoin
-explain analyze
+POSTHOOK: query: explain analyze
 select
   *
 from alltypesorc a join alltypesorc b on a.cint = b.cint
@@ -133,7 +131,7 @@ Plan optimized by CBO.
 
 Vertex dependency in root stage
 Reducer 2 <- Map 1 (SIMPLE_EDGE), Map 4 (SIMPLE_EDGE)
-Reducer 3 <- Reducer 2 (SIMPLE_EDGE)
+Reducer 3 <- Reducer 2 (CUSTOM_SIMPLE_EDGE)
 
 Stage-0
   Fetch Operator
@@ -143,8 +141,8 @@ Stage-0
       File Output Operator [FS_13]
         Group By Operator [GBY_11] (rows=1/1 width=8)
           Output:["_col0"],aggregations:["count()"]
-        <-Reducer 2 [SIMPLE_EDGE]
-          SHUFFLE [RS_10]
+        <-Reducer 2 [CUSTOM_SIMPLE_EDGE]
+          PARTITION_ONLY_SHUFFLE [RS_10]
             Merge Join Operator [MERGEJOIN_18] (rows=2166/10 width=8)
               Conds:RS_6._col0=RS_7._col0(Inner)
             <-Map 1 [SIMPLE_EDGE]
@@ -307,8 +305,7 @@ order by a.cint
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@alltypesorc
 #### A masked pattern was here ####
-PREHOOK: query: -- Try with dynamically partitioned hashjoin
-explain analyze
+PREHOOK: query: explain analyze
 select
   *
 from alltypesorc a join alltypesorc b on a.cint = b.cint
@@ -316,8 +313,7 @@ where
   a.cint between 1000000 and 3000000 and b.cbigint is not null
 order by a.cint
 PREHOOK: type: QUERY
-POSTHOOK: query: -- Try with dynamically partitioned hashjoin
-explain analyze
+POSTHOOK: query: explain analyze
 select
   *
 from alltypesorc a join alltypesorc b on a.cint = b.cint
@@ -424,7 +420,7 @@ Plan optimized by CBO.
 
 Vertex dependency in root stage
 Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Map 4 (CUSTOM_SIMPLE_EDGE)
-Reducer 3 <- Reducer 2 (SIMPLE_EDGE)
+Reducer 3 <- Reducer 2 (CUSTOM_SIMPLE_EDGE)
 
 Stage-0
   Fetch Operator
@@ -434,8 +430,8 @@ Stage-0
       File Output Operator [FS_13]
         Group By Operator [GBY_11] (rows=1/1 width=8)
           Output:["_col0"],aggregations:["count()"]
-        <-Reducer 2 [SIMPLE_EDGE]
-          SHUFFLE [RS_10]
+        <-Reducer 2 [CUSTOM_SIMPLE_EDGE]
+          PARTITION_ONLY_SHUFFLE [RS_10]
             Map Join Operator [MAPJOIN_18] (rows=1501/10 width=215)
               Conds:RS_6.KEY.reducesinkkey0=RS_7.KEY.reducesinkkey0(Inner),HybridGraceHashJoin:true
             <-Map 4 [CUSTOM_SIMPLE_EDGE]

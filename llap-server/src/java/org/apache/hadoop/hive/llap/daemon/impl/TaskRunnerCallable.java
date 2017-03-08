@@ -28,6 +28,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hive.llap.daemon.FragmentCompletionHandler;
 import org.apache.hadoop.hive.llap.daemon.HistoryLogger;
 import org.apache.hadoop.hive.llap.daemon.KilledTaskHandler;
+import org.apache.hadoop.hive.llap.daemon.SchedulerFragmentCompletingListener;
 import org.apache.hadoop.hive.llap.daemon.rpc.LlapDaemonProtocolProtos.FragmentRuntimeInfo;
 import org.apache.hadoop.hive.llap.daemon.rpc.LlapDaemonProtocolProtos.IOSpecProto;
 import org.apache.hadoop.hive.llap.daemon.rpc.LlapDaemonProtocolProtos.SignableVertexSpec;
@@ -40,7 +41,6 @@ import org.apache.hadoop.hive.ql.io.IOContextMap;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.Credentials;
-import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.log4j.MDC;
@@ -64,6 +64,7 @@ import org.apache.tez.runtime.task.TezTaskRunner2;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.net.SocketFactory;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.security.PrivilegedExceptionAction;
@@ -114,16 +115,19 @@ public class TaskRunnerCallable extends CallableWithNdc<TaskRunner2Result> {
   private final AtomicBoolean killInvoked = new AtomicBoolean(false);
   private final SignableVertexSpec vertex;
   private final TezEvent initialEvent;
-  private UserGroupInformation taskUgi;
+  private final SchedulerFragmentCompletingListener completionListener;
+  private UserGroupInformation fsTaskUgi;
+  private final SocketFactory socketFactory;
 
   @VisibleForTesting
   public TaskRunnerCallable(SubmitWorkRequestProto request, QueryFragmentInfo fragmentInfo,
-      Configuration conf, ExecutionContext executionContext, Map<String, String> envMap,
-      Credentials credentials, long memoryAvailable, AMReporter amReporter, ConfParams confParams,
-      LlapDaemonExecutorMetrics metrics, KilledTaskHandler killedTaskHandler,
-      FragmentCompletionHandler fragmentCompleteHandler, HadoopShim tezHadoopShim,
-      TezTaskAttemptID attemptId, SignableVertexSpec vertex, TezEvent initialEvent,
-      UserGroupInformation taskUgi) {
+                            Configuration conf, ExecutionContext executionContext, Map<String, String> envMap,
+                            Credentials credentials, long memoryAvailable, AMReporter amReporter, ConfParams confParams,
+                            LlapDaemonExecutorMetrics metrics, KilledTaskHandler killedTaskHandler,
+                            FragmentCompletionHandler fragmentCompleteHandler, HadoopShim tezHadoopShim,
+                            TezTaskAttemptID attemptId, SignableVertexSpec vertex, TezEvent initialEvent,
+                            UserGroupInformation fsTaskUgi, SchedulerFragmentCompletingListener completionListener,
+                            SocketFactory socketFactory) {
     this.request = request;
     this.fragmentInfo = fragmentInfo;
     this.conf = conf;
@@ -141,7 +145,7 @@ public class TaskRunnerCallable extends CallableWithNdc<TaskRunner2Result> {
     // Register with the AMReporter when the callable is setup. Unregister once it starts running.
     if (amReporter != null && jobToken != null) {
       this.amReporter.registerTask(request.getAmHost(), request.getAmPort(),
-          vertex.getUser(), jobToken, fragmentInfo.getQueryInfo().getQueryIdentifier());
+          vertex.getUser(), jobToken, fragmentInfo.getQueryInfo().getQueryIdentifier(), attemptId);
     }
     this.metrics = metrics;
     this.requestId = taskSpec.getTaskAttemptID().toString();
@@ -151,7 +155,9 @@ public class TaskRunnerCallable extends CallableWithNdc<TaskRunner2Result> {
     this.fragmentCompletionHanler = fragmentCompleteHandler;
     this.tezHadoopShim = tezHadoopShim;
     this.initialEvent = initialEvent;
-    this.taskUgi = taskUgi;
+    this.fsTaskUgi = fsTaskUgi;
+    this.completionListener = completionListener;
+    this.socketFactory = socketFactory;
   }
 
   public long getStartTime() {
@@ -172,11 +178,12 @@ public class TaskRunnerCallable extends CallableWithNdc<TaskRunner2Result> {
       }
 
       // Unregister from the AMReporter, since the task is now running.
-      this.amReporter.unregisterTask(request.getAmHost(), request.getAmPort());
+      TezTaskAttemptID ta = taskSpec.getTaskAttemptID();
+      this.amReporter.unregisterTask(request.getAmHost(), request.getAmPort(), ta);
 
       synchronized (this) {
         if (!shouldRunTask) {
-          LOG.info("Not starting task {} since it was killed earlier", taskSpec.getTaskAttemptID());
+          LOG.info("Not starting task {} since it was killed earlier", ta);
           return new TaskRunner2Result(EndReason.KILL_REQUESTED, null, null, false);
         }
       }
@@ -192,32 +199,33 @@ public class TaskRunnerCallable extends CallableWithNdc<TaskRunner2Result> {
 
       // TODO Consolidate this code with TezChild.
       runtimeWatch.start();
-      if (taskUgi == null) {
-        taskUgi = UserGroupInformation.createRemoteUser(vertex.getUser());
+      if (fsTaskUgi == null) {
+        fsTaskUgi = UserGroupInformation.createRemoteUser(vertex.getUser());
       }
-      taskUgi.addCredentials(credentials);
+      fsTaskUgi.addCredentials(credentials);
 
       Map<String, ByteBuffer> serviceConsumerMetadata = new HashMap<>();
       serviceConsumerMetadata.put(TezConstants.TEZ_SHUFFLE_HANDLER_SERVICE_ID,
           TezCommonUtils.convertJobTokenToBytes(jobToken));
       Multimap<String, String> startedInputsMap = createStartedInputMap(vertex);
 
-      UserGroupInformation taskOwner =
-          UserGroupInformation.createRemoteUser(vertex.getTokenIdentifier());
+      final UserGroupInformation taskOwner = fragmentInfo.getQueryInfo().getUmbilicalUgi();
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("taskOwner hashCode:" + taskOwner.hashCode());
+      }
       final InetSocketAddress address =
           NetUtils.createSocketAddrForHost(request.getAmHost(), request.getAmPort());
-      SecurityUtil.setTokenService(jobToken, address);
-      taskOwner.addToken(jobToken);
       umbilical = taskOwner.doAs(new PrivilegedExceptionAction<LlapTaskUmbilicalProtocol>() {
         @Override
         public LlapTaskUmbilicalProtocol run() throws Exception {
           return RPC.getProxy(LlapTaskUmbilicalProtocol.class,
-              LlapTaskUmbilicalProtocol.versionID, address, conf);
+              LlapTaskUmbilicalProtocol.versionID, address, taskOwner, conf, socketFactory);
         }
       });
 
       String fragmentId = LlapTezUtils.stripAttemptPrefix(taskSpec.getTaskAttemptID().toString());
       taskReporter = new LlapTaskReporter(
+          completionListener,
           umbilical,
           confParams.amHeartbeatIntervalMsMax,
           confParams.amCounterHeartbeatInterval,
@@ -225,14 +233,15 @@ public class TaskRunnerCallable extends CallableWithNdc<TaskRunner2Result> {
           new AtomicLong(0),
           request.getContainerIdString(),
           fragmentId,
-          initialEvent);
+          initialEvent,
+          requestId);
 
       String attemptId = fragmentInfo.getFragmentIdentifierString();
       IOContextMap.setThreadAttemptId(attemptId);
       try {
         synchronized (this) {
           if (shouldRunTask) {
-            taskRunner = new TezTaskRunner2(conf, taskUgi, fragmentInfo.getLocalDirs(),
+            taskRunner = new TezTaskRunner2(conf, fsTaskUgi, fragmentInfo.getLocalDirs(),
                 taskSpec,
                 vertex.getQueryIdentifier().getAppAttemptNumber(),
                 serviceConsumerMetadata, envMap, startedInputsMap, taskReporter, executor,
@@ -254,7 +263,7 @@ public class TaskRunnerCallable extends CallableWithNdc<TaskRunner2Result> {
           isCompleted.set(true);
           return result;
         } finally {
-          FileSystem.closeAllForUGI(taskUgi);
+          FileSystem.closeAllForUGI(fsTaskUgi);
           LOG.info("ExecutionTime for Container: " + request.getContainerIdString() + "=" +
                   runtimeWatch.stop().elapsedMillis());
           if (LOG.isDebugEnabled()) {
@@ -290,19 +299,24 @@ public class TaskRunnerCallable extends CallableWithNdc<TaskRunner2Result> {
     if (!isCompleted.get()) {
       if (!killInvoked.getAndSet(true)) {
         synchronized (this) {
-          LOG.info("Kill task requested for id={}, taskRunnerSetup={}", taskSpec.getTaskAttemptID(),
-              (taskRunner != null));
+          TezTaskAttemptID ta = taskSpec.getTaskAttemptID();
+          LOG.info("Kill task requested for id={}, taskRunnerSetup={}", ta, taskRunner != null);
           if (taskRunner != null) {
             killtimerWatch.start();
             LOG.info("Issuing kill to task {}", taskSpec.getTaskAttemptID());
             boolean killed = taskRunner.killTask();
+
             if (killed) {
               // Sending a kill message to the AM right here. Don't need to wait for the task to complete.
-              LOG.info("Kill request for task {} completed. Informing AM", taskSpec.getTaskAttemptID());
+              LOG.info("Kill request for task {} completed. Informing AM", ta);
+              // Inform the scheduler that this fragment has been killed.
+              // If the kill failed - that means the task has already hit a final condition,
+              // and a notification comes from the LlapTaskReporter
+              completionListener.fragmentCompleting(getRequestId(), SchedulerFragmentCompletingListener.State.KILLED);
               reportTaskKilled();
             } else {
               LOG.info("Kill request for task {} did not complete because the task is already complete",
-                  taskSpec.getTaskAttemptID());
+                  ta);
             }
             shouldRunTask = false;
           } else {
@@ -314,7 +328,7 @@ public class TaskRunnerCallable extends CallableWithNdc<TaskRunner2Result> {
             // If the task hasn't started - inform about fragment completion immediately. It's possible for
             // the callable to never run.
             fragmentCompletionHanler.fragmentComplete(fragmentInfo);
-            this.amReporter.unregisterTask(request.getAmHost(), request.getAmPort());
+            this.amReporter.unregisterTask(request.getAmHost(), request.getAmPort(), ta);
           }
         }
       } else {

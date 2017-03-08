@@ -63,6 +63,8 @@ import org.apache.hadoop.hive.conf.Constants;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.io.HdfsUtils;
+import org.apache.hadoop.hive.metastore.HiveMetaHook;
+import org.apache.hadoop.hive.metastore.DefaultHiveMetaHook;
 import org.apache.hadoop.hive.metastore.MetaStoreUtils;
 import org.apache.hadoop.hive.metastore.PartitionDropOptions;
 import org.apache.hadoop.hive.metastore.TableType;
@@ -138,6 +140,7 @@ import org.apache.hadoop.hive.ql.parse.AlterTablePartMergeFilesDesc;
 import org.apache.hadoop.hive.ql.parse.BaseSemanticAnalyzer;
 import org.apache.hadoop.hive.ql.parse.DDLSemanticAnalyzer;
 import org.apache.hadoop.hive.ql.parse.ExplainConfiguration.AnalyzeState;
+import org.apache.hadoop.hive.ql.parse.PreInsertTableDesc;
 import org.apache.hadoop.hive.ql.parse.ReplicationSpec;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.plan.AbortTxnsDesc;
@@ -165,6 +168,7 @@ import org.apache.hadoop.hive.ql.plan.DropTableDesc;
 import org.apache.hadoop.hive.ql.plan.FileMergeDesc;
 import org.apache.hadoop.hive.ql.plan.GrantDesc;
 import org.apache.hadoop.hive.ql.plan.GrantRevokeRoleDDL;
+import org.apache.hadoop.hive.ql.plan.InsertTableDesc;
 import org.apache.hadoop.hive.ql.plan.ListBucketingCtx;
 import org.apache.hadoop.hive.ql.plan.LockDatabaseDesc;
 import org.apache.hadoop.hive.ql.plan.LockTableDesc;
@@ -562,11 +566,55 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
       if (cacheMetadataDesc != null) {
         return cacheMetadata(db, cacheMetadataDesc);
       }
+      InsertTableDesc insertTableDesc = work.getInsertTableDesc();
+      if (insertTableDesc != null) {
+        return insertCommitWork(db, insertTableDesc);
+      }
+      PreInsertTableDesc preInsertTableDesc = work.getPreInsertTableDesc();
+      if (preInsertTableDesc != null) {
+        return preInsertWork(db, preInsertTableDesc);
+      }
     } catch (Throwable e) {
       failed(e);
       return 1;
     }
     assert false;
+    return 0;
+  }
+
+  private int preInsertWork(Hive db, PreInsertTableDesc preInsertTableDesc) throws HiveException {
+    try{
+      HiveMetaHook hook = preInsertTableDesc.getTable().getStorageHandler().getMetaHook();
+      if (hook == null || !(hook instanceof DefaultHiveMetaHook)) {
+        return 0;
+      }
+      DefaultHiveMetaHook hiveMetaHook = (DefaultHiveMetaHook) hook;
+      hiveMetaHook.preInsertTable(preInsertTableDesc.getTable().getTTable(), preInsertTableDesc.isOverwrite());
+    } catch (MetaException e) {
+      throw new HiveException(e);
+    }
+    return 0;
+  }
+
+  private int insertCommitWork(Hive db, InsertTableDesc insertTableDesc) throws MetaException {
+    boolean failed = true;
+    HiveMetaHook hook = insertTableDesc.getTable().getStorageHandler().getMetaHook();
+    if (hook == null || !(hook instanceof DefaultHiveMetaHook)) {
+      return 0;
+    }
+    DefaultHiveMetaHook hiveMetaHook = (DefaultHiveMetaHook) hook;
+    try {
+      hiveMetaHook.commitInsertTable(insertTableDesc.getTable().getTTable(),
+              insertTableDesc.isOverwrite()
+      );
+      failed = false;
+    } finally {
+      if (failed) {
+        hiveMetaHook.rollbackInsertTable(insertTableDesc.getTable().getTTable(),
+                insertTableDesc.isOverwrite()
+        );
+      }
+    }
     return 0;
   }
 
@@ -697,6 +745,9 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
     task.initialize(queryState, getQueryPlan(), driverCxt, opContext);
     subtask = task;
     int ret = task.execute(driverCxt);
+    if (subtask.getException() != null) {
+      setException(subtask.getException());
+    }
     return ret;
   }
 
@@ -1171,10 +1222,12 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
       throws HiveException {
 
     Table tbl = db.getTable(touchDesc.getTableName());
+    EnvironmentContext environmentContext = new EnvironmentContext();
+    environmentContext.putToProperties(StatsSetupConst.DO_NOT_UPDATE_STATS, StatsSetupConst.TRUE);
 
     if (touchDesc.getPartSpec() == null) {
       try {
-        db.alterTable(touchDesc.getTableName(), tbl, null);
+        db.alterTable(touchDesc.getTableName(), tbl, environmentContext);
       } catch (InvalidOperationException e) {
         throw new HiveException("Uable to update table");
       }
@@ -1186,7 +1239,7 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
         throw new HiveException("Specified partition does not exist");
       }
       try {
-        db.alterPartition(touchDesc.getTableName(), part, null);
+        db.alterPartition(touchDesc.getTableName(), part, environmentContext);
       } catch (InvalidOperationException e) {
         throw new HiveException(e);
       }
@@ -3493,6 +3546,16 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
 
   private int alterTableOrSinglePartition(AlterTableDesc alterTbl, Table tbl, Partition part)
       throws HiveException {
+    EnvironmentContext environmentContext = alterTbl.getEnvironmentContext();
+    if (environmentContext == null) {
+      environmentContext = new EnvironmentContext();
+      alterTbl.setEnvironmentContext(environmentContext);
+    }
+    // do not need update stats in alter table/partition operations
+    if (environmentContext.getProperties() == null ||
+        environmentContext.getProperties().get(StatsSetupConst.DO_NOT_UPDATE_STATS) == null) {
+      environmentContext.putToProperties(StatsSetupConst.DO_NOT_UPDATE_STATS, StatsSetupConst.TRUE);
+    }
 
     if (alterTbl.getOp() == AlterTableDesc.AlterTableTypes.RENAME) {
       tbl.setDbName(Utilities.getDatabaseName(alterTbl.getNewName()));
@@ -3630,6 +3693,10 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
       }
       sd.setCols(alterTbl.getNewCols());
     } else if (alterTbl.getOp() == AlterTableDesc.AlterTableTypes.ADDPROPS) {
+      if (StatsSetupConst.USER.equals(environmentContext.getProperties()
+              .get(StatsSetupConst.STATS_GENERATED))) {
+        environmentContext.getProperties().remove(StatsSetupConst.DO_NOT_UPDATE_STATS);
+      }
       if (part != null) {
         part.getTPartition().getParameters().putAll(alterTbl.getProps());
       } else {
@@ -3637,6 +3704,11 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
       }
     } else if (alterTbl.getOp() == AlterTableDesc.AlterTableTypes.DROPPROPS) {
       Iterator<String> keyItr = alterTbl.getProps().keySet().iterator();
+      if (StatsSetupConst.USER.equals(environmentContext.getProperties()
+          .get(StatsSetupConst.STATS_GENERATED))) {
+        // drop a stats parameter, which triggers recompute stats update automatically
+        environmentContext.getProperties().remove(StatsSetupConst.DO_NOT_UPDATE_STATS);
+      }
       while (keyItr.hasNext()) {
         if (part != null) {
           part.getTPartition().getParameters().remove(keyItr.next());
@@ -3730,6 +3802,8 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
       } catch (URISyntaxException e) {
         throw new HiveException(e);
       }
+      environmentContext.getProperties().remove(StatsSetupConst.DO_NOT_UPDATE_STATS);
+
     } else if (alterTbl.getOp() == AlterTableDesc.AlterTableTypes.ADDSKEWEDBY) {
       // Validation's been done at compile time. no validation is needed here.
       List<String> skewedColNames = null;
@@ -3775,6 +3849,8 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
           throw new HiveException(e);
         }
       }
+
+      environmentContext.getProperties().remove(StatsSetupConst.DO_NOT_UPDATE_STATS);
     } else if (alterTbl.getOp() == AlterTableTypes.ALTERBUCKETNUM) {
       if (part != null) {
         if (part.getBucketCount() == alterTbl.getNumberBuckets()) {
@@ -4417,6 +4493,10 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
         HiveMaterializedViewsRegistry.get().addMaterializedView(tbl);
       }
       addIfAbsentByName(new WriteEntity(tbl, WriteEntity.WriteType.DDL_NO_LOCK));
+
+      //set lineage info
+      DataContainer dc = new DataContainer(tbl.getTTable());
+      SessionState.get().getLineageState().setLineage(new Path(crtView.getViewName()), dc, tbl.getCols());
     }
     return 0;
   }
@@ -4435,7 +4515,11 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
       taskExec.setWork(truncateWork);
       taskExec.setQueryPlan(this.getQueryPlan());
       subtask = taskExec;
-      return taskExec.execute(driverCxt);
+      int ret = taskExec.execute(driverCxt);
+      if (subtask.getException() != null) {
+        setException(subtask.getException());
+      }
+      return ret;
     }
 
     String tableName = truncateTableDesc.getTableName();

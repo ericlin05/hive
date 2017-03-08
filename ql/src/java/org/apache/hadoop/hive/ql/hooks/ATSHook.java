@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hive.ql.hooks;
 
-import java.io.Serializable;
+import java.io.IOException;
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -25,12 +25,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.llap.registry.impl.LlapRegistryService;
 import org.apache.hadoop.hive.ql.QueryPlan;
 import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.exec.ExplainTask;
@@ -40,7 +43,7 @@ import org.apache.hadoop.hive.ql.exec.tez.TezTask;
 import org.apache.hadoop.hive.ql.log.PerfLogger;
 import org.apache.hadoop.hive.ql.parse.ExplainConfiguration;
 import org.apache.hadoop.hive.ql.plan.ExplainWork;
-import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntity;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEvent;
 import org.apache.hadoop.yarn.client.api.TimelineClient;
@@ -62,13 +65,14 @@ public class ATSHook implements ExecuteWithHookContext {
   private static final Object LOCK = new Object();
   private static final int VERSION = 2;
   private static ExecutorService executor;
+  private static ExecutorService senderExecutor;
   private static TimelineClient timelineClient;
   private enum EntityTypes { HIVE_QUERY_ID };
   private enum EventTypes { QUERY_SUBMITTED, QUERY_COMPLETED };
 
   private enum OtherInfoTypes {
     QUERY, STATUS, TEZ, MAPRED, INVOKER_INFO, SESSION_ID, THREAD_NAME, VERSION,
-    CLIENT_IP_ADDRESS, HIVE_ADDRESS, HIVE_INSTANCE_TYPE, CONF, PERF,
+    CLIENT_IP_ADDRESS, HIVE_ADDRESS, HIVE_INSTANCE_TYPE, CONF, PERF, LLAP_APP_ID
   };
   private enum ExecutionMode {
     MR, TEZ, LLAP, SPARK, NONE
@@ -84,12 +88,29 @@ public class ATSHook implements ExecuteWithHookContext {
     PerfLogger.GET_SPLITS, PerfLogger.RUN_TASKS,
   };
 
-  public ATSHook() {
+  private static void setupAtsExecutor(HiveConf conf) {
     synchronized(LOCK) {
       if (executor == null) {
 
-        executor = Executors.newSingleThreadExecutor(
-           new ThreadFactoryBuilder().setDaemon(true).setNameFormat("ATS Logger %d").build());
+        // The call to ATS appears to block indefinitely, blocking the ATS thread while
+        // the hook continues to submit work to the ExecutorService with each query.
+        // Over time the queued items can cause OOM as the HookContext seems to contain
+        // some items which use a lot of memory.
+        // Prevent this situation by creating executor with bounded capacity -
+        // the event will not be sent to ATS if there are too many outstanding work submissions.
+        int queueCapacity = conf.getIntVar(HiveConf.ConfVars.ATSHOOKQUEUECAPACITY);
+
+        // Executor to create the ATS events.
+        // This can use significant resources and should not be done on the main query thread.
+        LOG.info("Creating ATS executor queue with capacity " + queueCapacity);
+        BlockingQueue<Runnable> queue = new LinkedBlockingQueue<Runnable>(queueCapacity);
+        ThreadFactory threadFactory = new ThreadFactoryBuilder().setDaemon(true).setNameFormat("ATS Logger %d").build();
+        executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, queue, threadFactory);
+
+        // Create a separate thread to send the events.
+        // Keep separate from the creating events in case the send blocks.
+        BlockingQueue<Runnable> senderQueue = new LinkedBlockingQueue<Runnable>(queueCapacity);
+        senderExecutor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, senderQueue, threadFactory);
 
         YarnConfiguration yarnConf = new YarnConfiguration();
         timelineClient = TimelineClient.createTimelineClient();
@@ -109,7 +130,9 @@ public class ATSHook implements ExecuteWithHookContext {
         });
       }
     }
+  }
 
+  public ATSHook() {
     LOG.info("Created ATS Hook");
   }
 
@@ -118,77 +141,90 @@ public class ATSHook implements ExecuteWithHookContext {
     final long currentTime = System.currentTimeMillis();
     final HiveConf conf = new HiveConf(hookContext.getConf());
     final QueryState queryState = hookContext.getQueryState();
+    final String queryId = queryState.getQueryId();
 
-    executor.submit(new Runnable() {
-        @Override
-        public void run() {
-          try {
-            QueryPlan plan = hookContext.getQueryPlan();
-            if (plan == null) {
-              return;
-            }
-            String queryId = plan.getQueryId();
-            String opId = hookContext.getOperationId();
-            long queryStartTime = plan.getQueryStartTime();
-            String user = hookContext.getUgi().getUserName();
-            String requestuser = hookContext.getUserName();
-            if (hookContext.getUserName() == null ){
-              requestuser = hookContext.getUgi().getUserName() ;
-            }
-            int numMrJobs = Utilities.getMRTasks(plan.getRootTasks()).size();
-            int numTezJobs = Utilities.getTezTasks(plan.getRootTasks()).size();
-            if (numMrJobs + numTezJobs <= 0) {
-              return; // ignore client only queries
-            }
+    final Map<String, Long> durations = new HashMap<String, Long>();
+    for (String key : hookContext.getPerfLogger().getEndTimes().keySet()) {
+      durations.put(key, hookContext.getPerfLogger().getDuration(key));
+    }
 
-            switch(hookContext.getHookType()) {
-            case PRE_EXEC_HOOK:
-            ExplainConfiguration config = new ExplainConfiguration();
-            config.setFormatted(true);
-            ExplainWork work = new ExplainWork(null,// resFile
-                null,// pCtx
-                plan.getRootTasks(),// RootTasks
-                plan.getFetchTask(),// FetchTask
-                null,// analyzer
-                config, //explainConfig
-                null// cboInfo
-            );
-              @SuppressWarnings("unchecked")
-              ExplainTask explain = (ExplainTask) TaskFactory.get(work, conf);
-              explain.initialize(queryState, plan, null, null);
-              String query = plan.getQueryStr();
-              JSONObject explainPlan = explain.getJSONPlan(null, work);
-              String logID = conf.getLogIdVar(hookContext.getSessionId());
-              List<String> tablesRead = getTablesFromEntitySet(hookContext.getInputs());
-              List<String> tablesWritten = getTablesFromEntitySet(hookContext.getOutputs());
-              String executionMode = getExecutionMode(plan).name();
-              String hiveInstanceAddress = hookContext.getHiveInstanceAddress();
-              if (hiveInstanceAddress == null) {
-                hiveInstanceAddress = InetAddress.getLocalHost().getHostAddress();
+    try {
+      setupAtsExecutor(conf);
+
+      executor.submit(new Runnable() {
+          @Override
+          public void run() {
+            try {
+              QueryPlan plan = hookContext.getQueryPlan();
+              if (plan == null) {
+                return;
               }
-              String hiveInstanceType = hookContext.isHiveServerQuery() ? "HS2" : "CLI";
-              fireAndForget(conf,
-                  createPreHookEvent(queryId, query, explainPlan, queryStartTime,
-                      user, requestuser, numMrJobs, numTezJobs, opId,
-                      hookContext.getIpAddress(), hiveInstanceAddress, hiveInstanceType,
-                      hookContext.getSessionId(), logID, hookContext.getThreadId(), executionMode,
-                      tablesRead, tablesWritten, conf));
-              break;
-            case POST_EXEC_HOOK:
-              fireAndForget(conf, createPostHookEvent(queryId, currentTime, user, requestuser, true, opId, hookContext.getPerfLogger()));
-              break;
-            case ON_FAILURE_HOOK:
-              fireAndForget(conf, createPostHookEvent(queryId, currentTime, user, requestuser , false, opId, hookContext.getPerfLogger()));
-              break;
-            default:
-              //ignore
-              break;
+              String queryId = plan.getQueryId();
+              String opId = hookContext.getOperationId();
+              long queryStartTime = plan.getQueryStartTime();
+              String user = hookContext.getUgi().getShortUserName();
+              String requestuser = hookContext.getUserName();
+              if (hookContext.getUserName() == null ){
+                requestuser = hookContext.getUgi().getUserName() ;
+              }
+              int numMrJobs = Utilities.getMRTasks(plan.getRootTasks()).size();
+              int numTezJobs = Utilities.getTezTasks(plan.getRootTasks()).size();
+              if (numMrJobs + numTezJobs <= 0) {
+                return; // ignore client only queries
+              }
+
+              switch(hookContext.getHookType()) {
+              case PRE_EXEC_HOOK:
+              ExplainConfiguration config = new ExplainConfiguration();
+              config.setFormatted(true);
+              ExplainWork work = new ExplainWork(null,// resFile
+                  null,// pCtx
+                  plan.getRootTasks(),// RootTasks
+                  plan.getFetchTask(),// FetchTask
+                  null,// analyzer
+                  config, //explainConfig
+                  null// cboInfo
+              );
+                @SuppressWarnings("unchecked")
+                ExplainTask explain = (ExplainTask) TaskFactory.get(work, conf);
+                explain.initialize(queryState, plan, null, null);
+                String query = plan.getQueryStr();
+                JSONObject explainPlan = explain.getJSONPlan(null, work);
+                String logID = conf.getLogIdVar(hookContext.getSessionId());
+                List<String> tablesRead = getTablesFromEntitySet(hookContext.getInputs());
+                List<String> tablesWritten = getTablesFromEntitySet(hookContext.getOutputs());
+                String executionMode = getExecutionMode(plan).name();
+                String hiveInstanceAddress = hookContext.getHiveInstanceAddress();
+                if (hiveInstanceAddress == null) {
+                  hiveInstanceAddress = InetAddress.getLocalHost().getHostAddress();
+                }
+                String hiveInstanceType = hookContext.isHiveServerQuery() ? "HS2" : "CLI";
+                ApplicationId llapId = determineLlapId(conf, plan);
+                fireAndForget(
+                    createPreHookEvent(queryId, query, explainPlan, queryStartTime,
+                        user, requestuser, numMrJobs, numTezJobs, opId,
+                        hookContext.getIpAddress(), hiveInstanceAddress, hiveInstanceType,
+                        hookContext.getSessionId(), logID, hookContext.getThreadId(), executionMode,
+                        tablesRead, tablesWritten, conf, llapId));
+                break;
+              case POST_EXEC_HOOK:
+                fireAndForget(createPostHookEvent(queryId, currentTime, user, requestuser, true, opId, durations));
+                break;
+              case ON_FAILURE_HOOK:
+                fireAndForget(createPostHookEvent(queryId, currentTime, user, requestuser , false, opId, durations));
+                break;
+              default:
+                //ignore
+                break;
+              }
+            } catch (Exception e) {
+              LOG.warn("Failed to submit plan to ATS for " + queryId, e);
             }
-          } catch (Exception e) {
-            LOG.info("Failed to submit plan to ATS: " + StringUtils.stringifyException(e));
           }
-        }
-      });
+        });
+    } catch (Exception e) {
+      LOG.warn("Failed to submit to ATS for " + queryId, e);
+    }
   }
 
   protected List<String> getTablesFromEntitySet(Set<? extends Entity> entities) {
@@ -229,7 +265,8 @@ public class ATSHook implements ExecuteWithHookContext {
       long startTime, String user, String requestuser, int numMrJobs, int numTezJobs, String opId,
       String clientIpAddress, String hiveInstanceAddress, String hiveInstanceType,
       String sessionID, String logID, String threadId, String executionMode,
-      List<String> tablesRead, List<String> tablesWritten, HiveConf conf) throws Exception {
+      List<String> tablesRead, List<String> tablesWritten, HiveConf conf, ApplicationId llapAppId)
+          throws Exception {
 
     JSONObject queryObj = new JSONObject(new LinkedHashMap<>());
     queryObj.put("queryText", query);
@@ -285,12 +322,15 @@ public class ATSHook implements ExecuteWithHookContext {
     atsEntity.addOtherInfo(OtherInfoTypes.HIVE_ADDRESS.name(), hiveInstanceAddress);
     atsEntity.addOtherInfo(OtherInfoTypes.HIVE_INSTANCE_TYPE.name(), hiveInstanceType);
     atsEntity.addOtherInfo(OtherInfoTypes.CONF.name(), confObj.toString());
+    if (llapAppId != null) {
+      atsEntity.addOtherInfo(OtherInfoTypes.LLAP_APP_ID.name(), llapAppId.toString());
+    }
 
     return atsEntity;
   }
 
   TimelineEntity createPostHookEvent(String queryId, long stopTime, String user, String requestuser, boolean success,
-      String opId, PerfLogger perfLogger) throws Exception {
+      String opId, Map<String, Long> durations) throws Exception {
     LOG.info("Received post-hook notification for :" + queryId);
 
     TimelineEntity atsEntity = new TimelineEntity();
@@ -311,15 +351,44 @@ public class ATSHook implements ExecuteWithHookContext {
 
     // Perf times
     JSONObject perfObj = new JSONObject(new LinkedHashMap<>());
-    for (String key : perfLogger.getEndTimes().keySet()) {
-      perfObj.put(key, perfLogger.getDuration(key));
+    for (Map.Entry<String, Long> entry : durations.entrySet()) {
+      perfObj.put(entry.getKey(), entry.getValue());
     }
     atsEntity.addOtherInfo(OtherInfoTypes.PERF.name(), perfObj.toString());
 
     return atsEntity;
   }
 
-  synchronized void fireAndForget(Configuration conf, TimelineEntity entity) throws Exception {
-    timelineClient.putEntities(entity);
+  void fireAndForget(final TimelineEntity entity) throws Exception {
+    senderExecutor.submit(new Runnable() {
+      @Override
+      public void run() {
+        try {
+          timelineClient.putEntities(entity);
+        } catch (Exception err) {
+          LOG.warn("Failed to send event to ATS", err);
+        }
+      }
+    });
+  }
+
+  private ApplicationId determineLlapId(final HiveConf conf, QueryPlan plan) throws IOException {
+    // Note: for now, LLAP is only supported in Tez tasks. Will never come to MR; others may
+    //       be added here, although this is only necessary to have extra debug information.
+    for (TezTask tezTask : Utilities.getTezTasks(plan.getRootTasks())) {
+      if (!tezTask.getWork().getLlapMode()) continue;
+      // In HS2, the client should have been cached already for the common case.
+      // Otherwise, this may actually introduce delay to compilation for the first query.
+      String hosts = HiveConf.getVar(conf, HiveConf.ConfVars.LLAP_DAEMON_SERVICE_HOSTS);
+      if (hosts != null && !hosts.isEmpty()) {
+        ApplicationId llapId = LlapRegistryService.getClient(conf).getApplicationId();
+        LOG.info("The query will use LLAP instance " + llapId + " (" + hosts + ")");
+        return llapId;
+      } else {
+        LOG.info("Cannot determine LLAP instance on client - service hosts are not set");
+        return null;
+      }
+    }
+    return null;
   }
 }

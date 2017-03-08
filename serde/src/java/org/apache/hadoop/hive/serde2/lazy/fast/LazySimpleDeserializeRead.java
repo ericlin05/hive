@@ -376,7 +376,7 @@ public final class LazySimpleDeserializeRead extends DeserializeRead {
           if (fieldLength == 4) {
             if ((bytes[i] == 'T' || bytes[i] == 't') &&
                 (bytes[i + 1] == 'R' || bytes[i + 1] == 'r') &&
-                (bytes[i + 2] == 'U' || bytes[i + 1] == 'u') &&
+                (bytes[i + 2] == 'U' || bytes[i + 2] == 'u') &&
                 (bytes[i + 3] == 'E' || bytes[i + 3] == 'e')) {
               currentBoolean = true;
             } else {
@@ -581,6 +581,10 @@ public final class LazySimpleDeserializeRead extends DeserializeRead {
       }
     } catch (NumberFormatException nfe) {
        // U+FFFD will throw this as well
+       logExceptionMessage(bytes, fieldStart, fieldLength, primitiveCategories[fieldIndex]);
+       return false;
+    } catch (IllegalArgumentException iae) {
+       // E.g. can be thrown by Date.valueOf
        logExceptionMessage(bytes, fieldStart, fieldLength, primitiveCategories[fieldIndex]);
        return false;
     }

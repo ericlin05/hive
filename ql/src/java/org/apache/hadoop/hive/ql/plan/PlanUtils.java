@@ -469,6 +469,7 @@ public final class PlanUtils {
         SequenceFileInputFormat.class, SequenceFileOutputFormat.class,
         Utilities.makeProperties(serdeConstants.LIST_COLUMNS, MetaStoreUtils
         .getColumnNamesFromFieldSchema(fieldSchemas),
+        serdeConstants.COLUMN_NAME_DELIMITER, MetaStoreUtils.getColumnNameDelimiter(fieldSchemas),
         serdeConstants.LIST_COLUMN_TYPES, MetaStoreUtils
         .getColumnTypesFromFieldSchema(fieldSchemas),
         serdeConstants.SERIALIZATION_SORT_ORDER, order,
@@ -496,6 +497,7 @@ public final class PlanUtils {
           SequenceFileInputFormat.class, SequenceFileOutputFormat.class,
           Utilities.makeProperties(serdeConstants.LIST_COLUMNS, MetaStoreUtils
               .getColumnNamesFromFieldSchema(fieldSchemas),
+              serdeConstants.COLUMN_NAME_DELIMITER, MetaStoreUtils.getColumnNameDelimiter(fieldSchemas),
               serdeConstants.LIST_COLUMN_TYPES, MetaStoreUtils
               .getColumnTypesFromFieldSchema(fieldSchemas),
               serdeConstants.SERIALIZATION_SORT_ORDER, order.toString(),
@@ -521,6 +523,7 @@ public final class PlanUtils {
           SequenceFileOutputFormat.class, Utilities.makeProperties(
               serdeConstants.LIST_COLUMNS, MetaStoreUtils
               .getColumnNamesFromFieldSchema(fieldSchemas),
+              serdeConstants.COLUMN_NAME_DELIMITER, MetaStoreUtils.getColumnNameDelimiter(fieldSchemas),
               serdeConstants.LIST_COLUMN_TYPES, MetaStoreUtils
               .getColumnTypesFromFieldSchema(fieldSchemas),
               serdeConstants.ESCAPE_CHAR, "\\",
@@ -536,6 +539,8 @@ public final class PlanUtils {
         SequenceFileOutputFormat.class, Utilities.makeProperties(
         serdeConstants.LIST_COLUMNS, MetaStoreUtils
         .getColumnNamesFromFieldSchema(fieldSchemas),
+        serdeConstants.COLUMN_NAME_DELIMITER, MetaStoreUtils.getColumnNameDelimiter(fieldSchemas),
+        serdeConstants.COLUMN_NAME_DELIMITER, MetaStoreUtils.getColumnNameDelimiter(fieldSchemas),
         serdeConstants.LIST_COLUMN_TYPES, MetaStoreUtils
         .getColumnTypesFromFieldSchema(fieldSchemas),
         serdeConstants.ESCAPE_CHAR, "\\",
@@ -1122,7 +1127,8 @@ public final class PlanUtils {
     // For eg: for a query like 'select * from V3', where V3 -> V2, V2 -> V1, V1 -> T
     // -> implies depends on.
     // T's parent would be V1
-    for (int pos = 0; pos < aliases.length; pos++) {
+    // do not check last alias in the array for parent can not be itself.
+    for (int pos = 0; pos < aliases.length -1; pos++) {
       currentAlias = currentAlias == null ? aliases[pos] : currentAlias + ":" + aliases[pos];
 
       currentAlias = currentAlias.replace(SemanticAnalyzer.SUBQUERY_TAG_1, "")

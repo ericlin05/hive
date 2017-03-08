@@ -35,6 +35,13 @@ public abstract class CreateTableMessage extends EventMessage {
 
   public abstract Table getTableObj() throws Exception;
 
+  /**
+   * Get list of files created as a result of this DML operation
+   *
+   * @return The iterable of files
+   */
+  public abstract Iterable<String> getFiles();
+
   @Override
   public EventMessage checkValid() {
     if (getTable() == null)

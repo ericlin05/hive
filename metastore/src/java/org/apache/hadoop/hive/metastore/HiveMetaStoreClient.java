@@ -45,6 +45,7 @@ import java.util.NoSuchElementException;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.security.PrivilegedExceptionAction;
 
 import javax.security.auth.login.LoginException;
 
@@ -200,6 +201,42 @@ public class HiveMetaStoreClient implements IMetaStoreClient {
     } else {
       LOG.error("NOT getting uris from conf");
       throw new MetaException("MetaStoreURIs not found in conf file");
+    }
+
+    //If HADOOP_PROXY_USER is set in env or property,
+    //then need to create metastore client that proxies as that user.
+    String HADOOP_PROXY_USER = "HADOOP_PROXY_USER";
+    String proxyUser = System.getenv(HADOOP_PROXY_USER);
+    if (proxyUser == null) {
+      proxyUser = System.getProperty(HADOOP_PROXY_USER);
+    }
+    //if HADOOP_PROXY_USER is set, create DelegationToken using real user
+    if(proxyUser != null) {
+      LOG.info(HADOOP_PROXY_USER + " is set. Using delegation "
+          + "token for HiveMetaStore connection.");
+      try {
+        UserGroupInformation.getLoginUser().getRealUser().doAs(
+            new PrivilegedExceptionAction<Void>() {
+              @Override
+              public Void run() throws Exception {
+                open();
+                return null;
+              }
+            });
+        String delegationTokenPropString = "DelegationTokenForHiveMetaStoreServer";
+        String delegationTokenStr = getDelegationToken(proxyUser, proxyUser);
+        Utils.setTokenStr(UserGroupInformation.getCurrentUser(), delegationTokenStr,
+            delegationTokenPropString);
+        this.conf.setVar(ConfVars.METASTORE_TOKEN_SIGNATURE, delegationTokenPropString);
+        close();
+      } catch (Exception e) {
+        LOG.error("Error while setting delegation token for " + proxyUser, e);
+        if(e instanceof MetaException) {
+          throw (MetaException)e;
+        } else {
+          throw new MetaException(e.getMessage());
+        }
+      }
     }
     // finally open the store
     open();
@@ -702,9 +739,14 @@ public class HiveMetaStoreClient implements IMetaStoreClient {
         hook.commitCreateTable(tbl);
       }
       success = true;
-    } finally {
+    }
+    finally {
       if (!success && (hook != null)) {
-        hook.rollbackCreateTable(tbl);
+        try {
+          hook.rollbackCreateTable(tbl);
+        } catch (Exception e){
+          LOG.error("Create rollback failed with", e);
+        }
       }
     }
   }
@@ -2176,6 +2218,25 @@ public class HiveMetaStoreClient implements IMetaStoreClient {
     AddDynamicPartitions adp = new AddDynamicPartitions(txnId, dbName, tableName, partNames);
     adp.setOperationType(operationType);
     client.add_dynamic_partitions(adp);
+  }
+
+  @Override
+  public void insertTable(Table table, boolean overwrite) throws MetaException {
+    boolean failed = true;
+    HiveMetaHook hook = getHook(table);
+    if (hook == null || !(hook instanceof DefaultHiveMetaHook)) {
+      return;
+    }
+    DefaultHiveMetaHook hiveMetaHook = (DefaultHiveMetaHook) hook;
+    try {
+      hiveMetaHook.commitInsertTable(table, overwrite);
+      failed = false;
+    }
+    finally {
+      if (failed) {
+        hiveMetaHook.rollbackInsertTable(table, overwrite);
+      }
+    }
   }
 
   @InterfaceAudience.LimitedPrivate({"HCatalog"})

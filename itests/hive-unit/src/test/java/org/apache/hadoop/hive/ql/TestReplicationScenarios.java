@@ -22,10 +22,14 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.cli.CliSessionState;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
+import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.MetaStoreUtils;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
+import org.apache.hadoop.hive.metastore.api.NotificationEvent;
 import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.messaging.EventUtils;
+import org.apache.hadoop.hive.metastore.messaging.MessageFactory;
 import org.apache.hadoop.hive.ql.parse.ReplicationSemanticAnalyzer;
 import org.apache.hadoop.hive.ql.parse.ReplicationSpec.ReplStateMap;
 import org.apache.hadoop.hive.ql.processors.CommandProcessorResponse;
@@ -36,6 +40,7 @@ import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,10 +49,12 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 import static junit.framework.Assert.assertTrue;
+import static junit.framework.Assert.assertFalse;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -85,13 +92,12 @@ public class TestReplicationScenarios {
       useExternalMS = true;
       return;
     }
-    if (Shell.WINDOWS) {
-      WindowsPathUtil.convertPathsFromWindowsToHdfs(hconf);
-    }
 
-    System.setProperty(HiveConf.ConfVars.METASTORE_EVENT_LISTENERS.varname,
+    hconf.setVar(HiveConf.ConfVars.METASTORE_EVENT_LISTENERS,
         DBNOTIF_LISTENER_CLASSNAME); // turn on db notification listener on metastore
-    msPort = MetaStoreUtils.startMetaStore();
+    hconf.setBoolVar(HiveConf.ConfVars.REPLCMENABLED, true);
+    hconf.setVar(HiveConf.ConfVars.REPLCMDIR, TEST_PATH + "/cmroot/");
+    msPort = MetaStoreUtils.startMetaStore(hconf);
     hconf.setVar(HiveConf.ConfVars.REPLDIR,TEST_PATH + "/hrepl/");
     hconf.setVar(HiveConf.ConfVars.METASTOREURIS, "thrift://localhost:"
         + msPort);
@@ -189,6 +195,87 @@ public class TestReplicationScenarios {
     verifyRun("SELECT a from " + dbName + "_dupe.ptned WHERE b=2", ptn_data_2);
     verifyRun("SELECT a from " + dbName + ".ptned_empty", empty);
     verifyRun("SELECT * from " + dbName + ".unptned_empty", empty);
+  }
+
+  @Test
+  public void testBasicWithCM() throws Exception {
+
+    String testName = "basic_with_cm";
+    LOG.info("Testing "+testName);
+    String dbName = testName + "_" + tid;
+
+    run("CREATE DATABASE " + dbName);
+    run("CREATE TABLE " + dbName + ".unptned(a string) STORED AS TEXTFILE");
+    run("CREATE TABLE " + dbName + ".ptned(a string) partitioned by (b int) STORED AS TEXTFILE");
+    run("CREATE TABLE " + dbName + ".unptned_empty(a string) STORED AS TEXTFILE");
+    run("CREATE TABLE " + dbName + ".ptned_empty(a string) partitioned by (b int) STORED AS TEXTFILE");
+
+    String[] unptn_data = new String[]{ "eleven" , "twelve" };
+    String[] ptn_data_1 = new String[]{ "thirteen", "fourteen", "fifteen"};
+    String[] ptn_data_2 = new String[]{ "fifteen", "sixteen", "seventeen"};
+    String[] ptn_data_2_later = new String[]{ "eighteen", "nineteen", "twenty"};
+    String[] empty = new String[]{};
+
+    String unptn_locn = new Path(TEST_PATH , testName + "_unptn").toUri().getPath();
+    String ptn_locn_1 = new Path(TEST_PATH , testName + "_ptn1").toUri().getPath();
+    String ptn_locn_2 = new Path(TEST_PATH , testName + "_ptn2").toUri().getPath();
+    String ptn_locn_2_later = new Path(TEST_PATH , testName + "_ptn2_later").toUri().getPath();
+
+    createTestDataFile(unptn_locn, unptn_data);
+    createTestDataFile(ptn_locn_1, ptn_data_1);
+    createTestDataFile(ptn_locn_2, ptn_data_2);
+    createTestDataFile(ptn_locn_2_later, ptn_data_2_later);
+
+    run("LOAD DATA LOCAL INPATH '" + unptn_locn + "' OVERWRITE INTO TABLE " + dbName + ".unptned");
+    run("SELECT * from " + dbName + ".unptned");
+    verifyResults(unptn_data);
+    run("LOAD DATA LOCAL INPATH '" + ptn_locn_1 + "' OVERWRITE INTO TABLE " + dbName + ".ptned PARTITION(b=1)");
+    run("SELECT a from " + dbName + ".ptned WHERE b=1");
+    verifyResults(ptn_data_1);
+    run("LOAD DATA LOCAL INPATH '" + ptn_locn_2 + "' OVERWRITE INTO TABLE " + dbName + ".ptned PARTITION(b=2)");
+    run("SELECT a from " + dbName + ".ptned WHERE b=2");
+    verifyResults(ptn_data_2);
+    run("SELECT a from " + dbName + ".ptned_empty");
+    verifyResults(empty);
+    run("SELECT * from " + dbName + ".unptned_empty");
+    verifyResults(empty);
+
+    advanceDumpDir();
+    run("REPL DUMP " + dbName);
+    String replDumpLocn = getResult(0,0);
+    String replDumpId = getResult(0,1,true);
+
+    // Table dropped after "repl dump"
+    run("DROP TABLE " + dbName + ".unptned");
+    // Partition droppped after "repl dump"
+    run("ALTER TABLE " + dbName + ".ptned " + "DROP PARTITION(b=1)");
+    // File changed after "repl dump"
+    Partition p = metaStoreClient.getPartition(dbName, "ptned", "b=2");
+    Path loc = new Path(p.getSd().getLocation());
+    FileSystem fs = loc.getFileSystem(hconf);
+    Path file = fs.listStatus(loc)[0].getPath();
+    fs.delete(file, false);
+    fs.copyFromLocalFile(new Path(ptn_locn_2_later), file);
+
+    run("EXPLAIN REPL LOAD " + dbName + "_dupe FROM '" + replDumpLocn + "'");
+    printOutput();
+    run("REPL LOAD " + dbName + "_dupe FROM '" + replDumpLocn + "'");
+
+    run("REPL STATUS " + dbName + "_dupe");
+    verifyResults(new String[] {replDumpId});
+
+    run("SELECT * from " + dbName + "_dupe.unptned");
+    verifyResults(unptn_data);
+    run("SELECT a from " + dbName + "_dupe.ptned WHERE b=1");
+    verifyResults(ptn_data_1);
+    // Since partition(b=2) changed manually, Hive cannot find
+    // it in original location and cmroot, thus empty
+    run("SELECT a from " + dbName + "_dupe.ptned WHERE b=2");
+    verifyResults(empty);
+    run("SELECT a from " + dbName + ".ptned_empty");
+    verifyResults(empty);
+    run("SELECT * from " + dbName + ".unptned_empty");
+    verifyResults(empty);
   }
 
   @Test
@@ -318,7 +405,6 @@ public class TestReplicationScenarios {
     run("LOAD DATA LOCAL INPATH '" + ptn_locn_2 + "' OVERWRITE INTO TABLE " + dbName + ".ptned3 PARTITION(b=2)");
     verifySetup("SELECT a from " + dbName + ".ptned2 WHERE b=2", ptn_data_2);
 
-
     // At this point, we've set up all the tables and ptns we're going to test drops across
     // Replicate it first, and then we'll drop it on the source.
 
@@ -389,6 +475,132 @@ public class TestReplicationScenarios {
     }
     assertNotNull(e2);
     assertEquals(NoSuchObjectException.class, e.getClass());
+  }
+
+  @Test
+  public void testDropsWithCM() throws IOException {
+
+    String testName = "drops_with_cm";
+    LOG.info("Testing "+testName);
+    String dbName = testName + "_" + tid;
+
+    run("CREATE DATABASE " + dbName);
+    run("CREATE TABLE " + dbName + ".unptned(a string) STORED AS TEXTFILE");
+    run("CREATE TABLE " + dbName + ".ptned(a string) partitioned by (b string) STORED AS TEXTFILE");
+    run("CREATE TABLE " + dbName + ".ptned2(a string) partitioned by (b string) STORED AS TEXTFILE");
+
+    String[] unptn_data = new String[]{ "eleven" , "twelve" };
+    String[] ptn_data_1 = new String[]{ "thirteen", "fourteen", "fifteen"};
+    String[] ptn_data_2 = new String[]{ "fifteen", "sixteen", "seventeen"};
+    String[] empty = new String[]{};
+
+    String unptn_locn = new Path(TEST_PATH , testName + "_unptn").toUri().getPath();
+    String ptn_locn_1 = new Path(TEST_PATH , testName + "_ptn1").toUri().getPath();
+    String ptn_locn_2 = new Path(TEST_PATH , testName + "_ptn2").toUri().getPath();
+
+    createTestDataFile(unptn_locn, unptn_data);
+    createTestDataFile(ptn_locn_1, ptn_data_1);
+    createTestDataFile(ptn_locn_2, ptn_data_2);
+
+    run("LOAD DATA LOCAL INPATH '" + unptn_locn + "' OVERWRITE INTO TABLE " + dbName + ".unptned");
+    run("SELECT * from " + dbName + ".unptned");
+    verifyResults(unptn_data);
+    run("LOAD DATA LOCAL INPATH '" + ptn_locn_1 + "' OVERWRITE INTO TABLE " + dbName + ".ptned PARTITION(b='1')");
+    run("SELECT a from " + dbName + ".ptned WHERE b='1'");
+    verifyResults(ptn_data_1);
+    run("LOAD DATA LOCAL INPATH '" + ptn_locn_2 + "' OVERWRITE INTO TABLE " + dbName + ".ptned PARTITION(b='2')");
+    run("SELECT a from " + dbName + ".ptned WHERE b='2'");
+    verifyResults(ptn_data_2);
+    run("LOAD DATA LOCAL INPATH '" + ptn_locn_1 + "' OVERWRITE INTO TABLE " + dbName + ".ptned2 PARTITION(b='1')");
+    run("SELECT a from " + dbName + ".ptned2 WHERE b='1'");
+    verifyResults(ptn_data_1);
+    run("LOAD DATA LOCAL INPATH '" + ptn_locn_2 + "' OVERWRITE INTO TABLE " + dbName + ".ptned2 PARTITION(b='2')");
+    run("SELECT a from " + dbName + ".ptned2 WHERE b='2'");
+    verifyResults(ptn_data_2);
+
+    advanceDumpDir();
+    run("REPL DUMP " + dbName);
+    String replDumpLocn = getResult(0,0);
+    String replDumpId = getResult(0,1,true);
+    run("EXPLAIN REPL LOAD " + dbName + "_dupe FROM '" + replDumpLocn + "'");
+    printOutput();
+    run("REPL LOAD " + dbName + "_dupe FROM '" + replDumpLocn + "'");
+
+    run("REPL STATUS " + dbName + "_dupe");
+    verifyResults(new String[] {replDumpId});
+
+    run("SELECT * from " + dbName + "_dupe.unptned");
+    verifyResults(unptn_data);
+    run("SELECT a from " + dbName + "_dupe.ptned WHERE b='1'");
+    verifyResults(ptn_data_1);
+    run("SELECT a from " + dbName + "_dupe.ptned WHERE b='2'");
+    verifyResults(ptn_data_2);
+    run("SELECT a from " + dbName + "_dupe.ptned2 WHERE b='1'");
+    verifyResults(ptn_data_1);
+    run("SELECT a from " + dbName + "_dupe.ptned2 WHERE b='2'");
+    verifyResults(ptn_data_2);
+
+    run("CREATE TABLE " + dbName + ".unptned_copy" + " AS SELECT a FROM " + dbName + ".unptned");
+    run("CREATE TABLE " + dbName + ".ptned_copy" + " LIKE " + dbName + ".ptned");
+    run("INSERT INTO TABLE " + dbName + ".ptned_copy" + " PARTITION(b='1') SELECT a FROM " +
+        dbName + ".ptned WHERE b='1'");
+    run("SELECT a from " + dbName + ".unptned_copy");
+    verifyResults(unptn_data);
+    run("SELECT a from " + dbName + ".ptned_copy");
+    verifyResults(ptn_data_1);
+
+    run("DROP TABLE " + dbName + ".unptned");
+    run("ALTER TABLE " + dbName + ".ptned DROP PARTITION (b='2')");
+    run("DROP TABLE " + dbName + ".ptned2");
+    run("SELECT a from " + dbName + ".ptned WHERE b=2");
+    verifyResults(empty);
+    run("SELECT a from " + dbName + ".ptned");
+    verifyResults(ptn_data_1);
+
+    advanceDumpDir();
+    run("REPL DUMP " + dbName + " FROM " + replDumpId);
+    String postDropReplDumpLocn = getResult(0,0);
+    String postDropReplDumpId = getResult(0,1,true);
+    LOG.info("Dumped to {} with id {}->{}", postDropReplDumpLocn, replDumpId, postDropReplDumpId);
+
+    // Drop table after dump
+    run("DROP TABLE " + dbName + ".unptned_copy");
+    // Drop partition after dump
+    run("ALTER TABLE " + dbName + ".ptned_copy DROP PARTITION(b='1')");
+
+    run("EXPLAIN REPL LOAD " + dbName + "_dupe FROM '" + postDropReplDumpLocn + "'");
+    printOutput();
+    run("REPL LOAD " + dbName + "_dupe FROM '" + postDropReplDumpLocn + "'");
+
+    Exception e = null;
+    try {
+      Table tbl = metaStoreClient.getTable(dbName + "_dupe", "unptned");
+      assertNull(tbl);
+    } catch (TException te) {
+      e = te;
+    }
+    assertNotNull(e);
+    assertEquals(NoSuchObjectException.class, e.getClass());
+
+    run("SELECT a from " + dbName + "_dupe.ptned WHERE b=2");
+    verifyResults(empty);
+    run("SELECT a from " + dbName + "_dupe.ptned");
+    verifyResults(ptn_data_1);
+
+    Exception e2 = null;
+    try {
+      Table tbl = metaStoreClient.getTable(dbName+"_dupe","ptned2");
+      assertNull(tbl);
+    } catch (TException te) {
+      e2 = te;
+    }
+    assertNotNull(e2);
+    assertEquals(NoSuchObjectException.class, e.getClass());
+
+    run("SELECT a from " + dbName + "_dupe.unptned_copy");
+    verifyResults(unptn_data);
+    run("SELECT a from " + dbName + "_dupe.ptned_copy");
+    verifyResults(ptn_data_1);
   }
 
   @Test
@@ -578,6 +790,14 @@ public class TestReplicationScenarios {
   }
 
   @Test
+  @Ignore
+  // The test turned off temporarily in HIVE-15478. This test is not running
+  // properly even though it passed before. The reason the test passed before is because
+  // we collect files added by "create table" statement during "repl dump", and it will take
+  // the files added by "insert statement". In HIVE-15478, Hive collect "create table" affected
+  // files during processing "create table" statement, and no data files present at that time.
+  // The inserted files rely on the missing INSERT_EVENT to signal. We need to turn on
+  // FIRE_EVENTS_FOR_DML setting to trigger INSERT_EVENT and this is WIP tracked by other ticket.
   public void testIncrementalInserts() throws IOException {
     String testName = "incrementalInserts";
     LOG.info("Testing " + testName);
@@ -739,6 +959,120 @@ public class TestReplicationScenarios {
     //   a) Multi-db wh-level REPL LOAD - need to add that
     //   b) Insert into tables - quite a few cases need to be enumerated there, including dyn adds.
 
+  }
+
+  @Test
+  public void testEventFilters(){
+    // Test testing that the filters introduced by EventUtils are working correctly.
+
+    // The current filters we use in ReplicationSemanticAnalyzer is as follows:
+    //    IMetaStoreClient.NotificationFilter evFilter = EventUtils.andFilter(
+    //        EventUtils.getDbTblNotificationFilter(dbNameOrPattern, tblNameOrPattern),
+    //        EventUtils.getEventBoundaryFilter(eventFrom, eventTo),
+    //        EventUtils.restrictByMessageFormat(MessageFactory.getInstance().getMessageFormat()));
+    // So, we test each of those three filters, and then test andFilter itself.
+
+
+    String dbname = "testfilter_db";
+    String tblname = "testfilter_tbl";
+
+    // Test EventUtils.getDbTblNotificationFilter - this is supposed to restrict
+    // events to those that match the dbname and tblname provided to the filter.
+    // If the tblname passed in to the filter is null, then it restricts itself
+    // to dbname-matching alone.
+    IMetaStoreClient.NotificationFilter dbTblFilter = EventUtils.getDbTblNotificationFilter(dbname,tblname);
+    IMetaStoreClient.NotificationFilter dbFilter = EventUtils.getDbTblNotificationFilter(dbname,null);
+
+    assertFalse(dbTblFilter.accept(null));
+    assertTrue(dbTblFilter.accept(createDummyEvent(dbname, tblname, 0)));
+    assertFalse(dbTblFilter.accept(createDummyEvent(dbname, tblname + "extra",0)));
+    assertFalse(dbTblFilter.accept(createDummyEvent(dbname + "extra", tblname,0)));
+
+    assertFalse(dbFilter.accept(null));
+    assertTrue(dbFilter.accept(createDummyEvent(dbname, tblname,0)));
+    assertTrue(dbFilter.accept(createDummyEvent(dbname, tblname + "extra", 0)));
+    assertFalse(dbFilter.accept(createDummyEvent(dbname + "extra", tblname,0)));
+
+
+    // Test EventUtils.getEventBoundaryFilter - this is supposed to only allow events
+    // within a range specified.
+    long evBegin = 50;
+    long evEnd = 75;
+    IMetaStoreClient.NotificationFilter evRangeFilter = EventUtils.getEventBoundaryFilter(evBegin,evEnd);
+
+    assertTrue(evBegin < evEnd);
+    assertFalse(evRangeFilter.accept(null));
+    assertFalse(evRangeFilter.accept(createDummyEvent(dbname, tblname, evBegin - 1)));
+    assertTrue(evRangeFilter.accept(createDummyEvent(dbname, tblname, evBegin)));
+    assertTrue(evRangeFilter.accept(createDummyEvent(dbname, tblname, evBegin + 1)));
+    assertTrue(evRangeFilter.accept(createDummyEvent(dbname, tblname, evEnd - 1)));
+    assertTrue(evRangeFilter.accept(createDummyEvent(dbname, tblname, evEnd)));
+    assertFalse(evRangeFilter.accept(createDummyEvent(dbname, tblname, evEnd + 1)));
+
+
+    // Test EventUtils.restrictByMessageFormat - this restricts events generated to those
+    // that match a provided message format
+
+    IMetaStoreClient.NotificationFilter restrictByDefaultMessageFormat =
+        EventUtils.restrictByMessageFormat(MessageFactory.getInstance().getMessageFormat());
+    IMetaStoreClient.NotificationFilter restrictByArbitraryMessageFormat =
+        EventUtils.restrictByMessageFormat(MessageFactory.getInstance().getMessageFormat() + "_bogus");
+    NotificationEvent dummyEvent = createDummyEvent(dbname,tblname,0);
+
+    assertEquals(MessageFactory.getInstance().getMessageFormat(),dummyEvent.getMessageFormat());
+
+    assertFalse(restrictByDefaultMessageFormat.accept(null));
+    assertTrue(restrictByDefaultMessageFormat.accept(dummyEvent));
+    assertFalse(restrictByArbitraryMessageFormat.accept(dummyEvent));
+
+    // Test andFilter operation.
+
+    IMetaStoreClient.NotificationFilter yes = new IMetaStoreClient.NotificationFilter() {
+      @Override
+      public boolean accept(NotificationEvent notificationEvent) {
+        return true;
+      }
+    };
+
+    IMetaStoreClient.NotificationFilter no = new IMetaStoreClient.NotificationFilter() {
+      @Override
+      public boolean accept(NotificationEvent notificationEvent) {
+        return false;
+      }
+    };
+
+    assertTrue(EventUtils.andFilter(yes, yes).accept(dummyEvent));
+    assertFalse(EventUtils.andFilter(yes, no).accept(dummyEvent));
+    assertFalse(EventUtils.andFilter(no, yes).accept(dummyEvent));
+    assertFalse(EventUtils.andFilter(no, no).accept(dummyEvent));
+
+    assertTrue(EventUtils.andFilter(yes, yes, yes).accept(dummyEvent));
+    assertFalse(EventUtils.andFilter(yes, yes, no).accept(dummyEvent));
+    assertFalse(EventUtils.andFilter(yes, no, yes).accept(dummyEvent));
+    assertFalse(EventUtils.andFilter(yes, no, no).accept(dummyEvent));
+    assertFalse(EventUtils.andFilter(no, yes, yes).accept(dummyEvent));
+    assertFalse(EventUtils.andFilter(no, yes, no).accept(dummyEvent));
+    assertFalse(EventUtils.andFilter(no, no, yes).accept(dummyEvent));
+    assertFalse(EventUtils.andFilter(no, no, no).accept(dummyEvent));
+
+
+  }
+
+  private NotificationEvent createDummyEvent(String dbname, String tblname, long evid) {
+    MessageFactory msgFactory = MessageFactory.getInstance();
+    Table t = new Table();
+    t.setDbName(dbname);
+    t.setTableName(tblname);
+    NotificationEvent event = new NotificationEvent(
+        evid,
+        (int)System.currentTimeMillis(),
+        MessageFactory.CREATE_TABLE_EVENT,
+        msgFactory.buildCreateTableMessage(t, Arrays.asList("/tmp/").iterator()).toString()
+    );
+    event.setDbName(t.getDbName());
+    event.setTableName(t.getTableName());
+    event.setMessageFormat(msgFactory.getMessageFormat());
+    return event;
   }
 
   private String verifyAndReturnDbReplStatus(String dbName, String tblName, String prevReplDumpId, String cmd) throws IOException {

@@ -14,6 +14,20 @@
 
 package org.apache.hadoop.hive.llap.daemon.impl;
 
+import org.apache.hadoop.hive.llap.protocol.LlapTaskUmbilicalProtocol.TezAttemptArray;
+
+import org.apache.hadoop.io.ArrayWritable;
+
+import java.util.ArrayList;
+
+import java.util.List;
+
+import java.util.HashSet;
+
+import java.util.Set;
+
+import java.util.concurrent.ConcurrentHashMap;
+
 import javax.net.SocketFactory;
 
 import java.io.IOException;
@@ -26,6 +40,8 @@ import java.util.concurrent.DelayQueue;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -76,8 +92,6 @@ public class AMReporter extends AbstractService {
   Ignore exceptions when communicating with the AM.
   At a later point, report back saying the AM is dead so that tasks can be removed from the running queue.
 
-  Use a cachedThreadPool so that a few AMs going down does not affect other AppMasters.
-
   Race: When a task completes - it sends out it's message via the regular TaskReporter. The AM after this may run another DAG,
   or may die. This may need to be consolidated with the LlapTaskReporter. Try ensuring there's no race between the two.
 
@@ -104,15 +118,24 @@ public class AMReporter extends AbstractService {
   volatile ListenableFuture<Void> queueLookupFuture;
   private final DaemonId daemonId;
 
-  public AMReporter(AtomicReference<InetSocketAddress> localAddress,
-      QueryFailedHandler queryFailedHandler, Configuration conf, DaemonId daemonId) {
+  public AMReporter(int numExecutors, int maxThreads, AtomicReference<InetSocketAddress>
+      localAddress, QueryFailedHandler queryFailedHandler, Configuration conf, DaemonId daemonId,
+      SocketFactory socketFactory) {
     super(AMReporter.class.getName());
     this.localAddress = localAddress;
     this.queryFailedHandler = queryFailedHandler;
     this.conf = conf;
     this.daemonId = daemonId;
-    ExecutorService rawExecutor = Executors.newCachedThreadPool(
-        new ThreadFactoryBuilder().setDaemon(true).setNameFormat("AMReporter %d").build());
+    if (maxThreads < numExecutors) {
+      maxThreads = numExecutors;
+      LOG.warn("maxThreads={} is less than numExecutors={}. Setting maxThreads=numExecutors",
+          maxThreads, numExecutors);
+    }
+    ExecutorService rawExecutor =
+        new ThreadPoolExecutor(numExecutors, maxThreads,
+            60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<Runnable>(),
+            new ThreadFactoryBuilder().setDaemon(true).setNameFormat("AMReporter %d").build());
     this.executor = MoreExecutors.listeningDecorator(rawExecutor);
     ExecutorService rawExecutor2 = Executors.newFixedThreadPool(1,
         new ThreadFactoryBuilder().setDaemon(true).setNameFormat("AMReporterQueueDrainer").build());
@@ -129,7 +152,7 @@ public class AMReporter extends AbstractService {
         .retryUpToMaximumTimeWithFixedSleep(retryTimeout, retrySleep,
             TimeUnit.MILLISECONDS);
 
-    this.socketFactory = NetUtils.getDefaultSocketFactory(conf);
+    this.socketFactory = socketFactory;
 
     LOG.info("Setting up AMReporter with " +
         "heartbeatInterval(ms)=" + heartbeatInterval +
@@ -175,7 +198,8 @@ public class AMReporter extends AbstractService {
   }
 
   public void registerTask(String amLocation, int port, String user,
-                           Token<JobTokenIdentifier> jobToken, QueryIdentifier queryIdentifier) {
+      Token<JobTokenIdentifier> jobToken, QueryIdentifier queryIdentifier,
+      TezTaskAttemptID attemptId) {
     if (LOG.isTraceEnabled()) {
       LOG.trace("Registering for heartbeat: " + amLocation + ":" + port + " for queryIdentifier=" + queryIdentifier);
     }
@@ -184,9 +208,8 @@ public class AMReporter extends AbstractService {
       LlapNodeId amNodeId = LlapNodeId.getInstance(amLocation, port);
       amNodeInfo = knownAppMasters.get(amNodeId);
       if (amNodeInfo == null) {
-        amNodeInfo =
-            new AMNodeInfo(amNodeId, user, jobToken, queryIdentifier, retryPolicy, retryTimeout, socketFactory,
-                conf);
+        amNodeInfo = new AMNodeInfo(amNodeId, user, jobToken, queryIdentifier,
+            retryPolicy, retryTimeout, socketFactory, conf);
         knownAppMasters.put(amNodeId, amNodeInfo);
         // Add to the queue only the first time this is registered, and on
         // subsequent instances when it's taken off the queue.
@@ -194,11 +217,11 @@ public class AMReporter extends AbstractService {
         pendingHeartbeatQueeu.add(amNodeInfo);
       }
       amNodeInfo.setCurrentQueryIdentifier(queryIdentifier);
-      amNodeInfo.incrementAndGetTaskCount();
+      amNodeInfo.addTaskAttempt(attemptId);
     }
   }
 
-  public void unregisterTask(String amLocation, int port) {
+  public void unregisterTask(String amLocation, int port, TezTaskAttemptID ta) {
     if (LOG.isTraceEnabled()) {
       LOG.trace("Un-registering for heartbeat: " + amLocation + ":" + port);
     }
@@ -209,7 +232,7 @@ public class AMReporter extends AbstractService {
       if (amNodeInfo == null) {
         LOG.info(("Ignoring duplicate unregisterRequest for am at: " + amLocation + ":" + port));
       } else {
-        amNodeInfo.decrementAndGetTaskCount();
+        amNodeInfo.removeTaskAttempt(ta);
       }
       // Not removing this here. Will be removed when taken off the queue and discovered to have 0
       // pending tasks.
@@ -334,29 +357,33 @@ public class AMReporter extends AbstractService {
       if (LOG.isTraceEnabled()) {
         LOG.trace("Attempting to heartbeat to AM: " + amNodeInfo);
       }
-      if (amNodeInfo.getTaskCount() > 0) {
-        try {
-          if (LOG.isTraceEnabled()) {
-            LOG.trace("NodeHeartbeat to: " + amNodeInfo);
-          }
-          amNodeInfo.getUmbilical().nodeHeartbeat(new Text(nodeId.getHostname()),
-              new Text(daemonId.getUniqueNodeIdInCluster()), nodeId.getPort());
-        } catch (IOException e) {
-          QueryIdentifier currentQueryIdentifier = amNodeInfo.getCurrentQueryIdentifier();
-          amNodeInfo.setAmFailed(true);
-          LOG.warn("Failed to communicated with AM at {}. Killing remaining fragments for query {}",
-              amNodeInfo.amNodeId, currentQueryIdentifier, e);
-          queryFailedHandler.queryFailed(currentQueryIdentifier);
-        } catch (InterruptedException e) {
-          if (!isShutdown.get()) {
-            LOG.warn("Interrupted while trying to send heartbeat to AM {}", amNodeInfo.amNodeId, e);
-          }
-        }
-      } else {
+      List<TezTaskAttemptID> tasks = amNodeInfo.getTasksSnapshot();
+      if (tasks.isEmpty()) {
         if (LOG.isDebugEnabled()) {
           LOG.debug("Skipping node heartbeat to AM: " + amNodeInfo + ", since ref count is 0");
         }
+        return null;
       }
+      try {
+        if (LOG.isTraceEnabled()) {
+          LOG.trace("NodeHeartbeat to: " + amNodeInfo);
+        }
+        TezAttemptArray aw = new TezAttemptArray();
+        aw.set(tasks.toArray(new TezTaskAttemptID[tasks.size()]));
+        amNodeInfo.getUmbilical().nodeHeartbeat(new Text(nodeId.getHostname()),
+            new Text(daemonId.getUniqueNodeIdInCluster()), nodeId.getPort(), aw);
+      } catch (IOException e) {
+        QueryIdentifier currentQueryIdentifier = amNodeInfo.getCurrentQueryIdentifier();
+        amNodeInfo.setAmFailed(true);
+        LOG.warn("Failed to communicated with AM at {}. Killing remaining fragments for query {}",
+            amNodeInfo.amNodeId, currentQueryIdentifier, e);
+        queryFailedHandler.queryFailed(currentQueryIdentifier);
+      } catch (InterruptedException e) {
+        if (!isShutdown.get()) {
+          LOG.warn("Interrupted while trying to send heartbeat to AM {}", amNodeInfo.amNodeId, e);
+        }
+      }
+
       return null;
     }
   }
@@ -364,7 +391,8 @@ public class AMReporter extends AbstractService {
 
 
   private static class AMNodeInfo implements Delayed {
-    private final AtomicInteger taskCount = new AtomicInteger(0);
+    // Serves as lock for itself.
+    private final Set<TezTaskAttemptID> tasks = new HashSet<>();
     private final String user;
     private final Token<JobTokenIdentifier> jobToken;
     private final Configuration conf;
@@ -422,12 +450,22 @@ public class AMReporter extends AbstractService {
       umbilical = null;
     }
 
-    int incrementAndGetTaskCount() {
-      return taskCount.incrementAndGet();
+    int addTaskAttempt(TezTaskAttemptID attemptId) {
+      synchronized (tasks) {
+        if (!tasks.add(attemptId)) {
+          throw new RuntimeException(attemptId + " was already registered");
+        }
+        return tasks.size();
+      }
     }
 
-    int decrementAndGetTaskCount() {
-      return taskCount.decrementAndGet();
+    int removeTaskAttempt(TezTaskAttemptID attemptId) {
+      synchronized (tasks) {
+        if (!tasks.remove(attemptId)) {
+          throw new RuntimeException(attemptId + " was not registered and couldn't be removed");
+        }
+        return tasks.size();
+      }
     }
 
     void setAmFailed(boolean val) {
@@ -438,8 +476,12 @@ public class AMReporter extends AbstractService {
       return amFailed.get();
     }
 
-    int getTaskCount() {
-      return taskCount.get();
+    List<TezTaskAttemptID> getTasksSnapshot() {
+      List<TezTaskAttemptID> result = new ArrayList<>();
+      synchronized (tasks) {
+        result.addAll(tasks);
+      }
+      return result;
     }
 
     public synchronized QueryIdentifier getCurrentQueryIdentifier() {
@@ -474,6 +516,12 @@ public class AMReporter extends AbstractService {
     @Override
     public String toString() {
       return "AMInfo: " + amNodeId + ", taskCount=" + getTaskCount();
+    }
+
+    private int getTaskCount() {
+      synchronized (tasks) {
+        return tasks.size();
+      }
     }
   }
 }

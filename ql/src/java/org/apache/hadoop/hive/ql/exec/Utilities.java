@@ -19,9 +19,11 @@
 package org.apache.hadoop.hive.ql.exec;
 
 import com.esotericsoftware.kryo.Kryo;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.WordUtils;
@@ -141,6 +143,7 @@ import org.apache.hadoop.mapred.SequenceFileInputFormat;
 import org.apache.hadoop.mapred.SequenceFileOutputFormat;
 import org.apache.hadoop.util.Progressable;
 import org.apache.hadoop.util.Shell;
+import org.apache.hive.common.util.ACLConfigurationParser;
 import org.apache.hive.common.util.ReflectionUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -186,12 +189,12 @@ import java.util.Properties;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.Deflater;
@@ -335,7 +338,7 @@ public final class Utilities {
     return null;
   }
 
-  public static BaseWork getMergeWork(JobConf jconf) {
+  public static BaseWork getMergeWork(Configuration jconf) {
     if ((jconf.get(DagUtils.TEZ_MERGE_CURRENT_MERGE_FILE_PREFIX) == null)
         || (jconf.get(DagUtils.TEZ_MERGE_CURRENT_MERGE_FILE_PREFIX).isEmpty())) {
       return null;
@@ -343,7 +346,7 @@ public final class Utilities {
     return getMergeWork(jconf, jconf.get(DagUtils.TEZ_MERGE_CURRENT_MERGE_FILE_PREFIX));
   }
 
-  public static BaseWork getMergeWork(JobConf jconf, String prefix) {
+  public static BaseWork getMergeWork(Configuration jconf, String prefix) {
     if (prefix == null || prefix.isEmpty()) {
       return null;
     }
@@ -863,22 +866,6 @@ public final class Utilities {
         b = in.readByte();
       } catch (EOFException e) {
         return StreamStatus.EOF;
-      }
-
-      // Default new line characters on windows are "CRLF" so detect if there are any windows
-      // native newline characters and handle them.
-      if (Shell.WINDOWS) {
-        // if the CR is not followed by the LF on windows then add it back to the stream and
-        // proceed with next characters in the input stream.
-        if (foundCrChar && b != Utilities.newLineCode) {
-          out.write(Utilities.carriageReturnCode);
-          foundCrChar = false;
-        }
-
-        if (b == Utilities.carriageReturnCode) {
-          foundCrChar = true;
-          continue;
-        }
       }
 
       if (b == Utilities.newLineCode) {
@@ -2100,7 +2087,7 @@ public final class Utilities {
 
     long[] summary = {0, 0, 0};
 
-    final List<Path> pathNeedProcess = new ArrayList<>();
+    final Set<Path> pathNeedProcess = new HashSet<>();
 
     // Since multiple threads could call this method concurrently, locking
     // this method will avoid number of threads out of control.
@@ -2129,13 +2116,14 @@ public final class Utilities {
       // Process the case when name node call is needed
       final Map<String, ContentSummary> resultMap = new ConcurrentHashMap<String, ContentSummary>();
       ArrayList<Future<?>> results = new ArrayList<Future<?>>();
-      final ThreadPoolExecutor executor;
+      final ExecutorService executor;
       int maxThreads = ctx.getConf().getInt("mapred.dfsclient.parallelism.max", 0);
       if (pathNeedProcess.size() > 1 && maxThreads > 1) {
         int numExecutors = Math.min(pathNeedProcess.size(), maxThreads);
         LOG.info("Using " + numExecutors + " threads for getContentSummary");
-        executor = new ThreadPoolExecutor(numExecutors, numExecutors, 60, TimeUnit.SECONDS,
-            new LinkedBlockingQueue<Runnable>());
+        executor = Executors.newFixedThreadPool(numExecutors,
+            new ThreadFactoryBuilder().setDaemon(true)
+                .setNameFormat("Get-Input-Summary-%d").build());
       } else {
         executor = null;
       }
@@ -2185,11 +2173,19 @@ public final class Utilities {
                   resultMap.put(pathStr, cs.getContentSummary(p, myJobConf));
                   return;
                 }
-                HiveStorageHandler handler = HiveUtils.getStorageHandler(myConf,
-                    SerDeUtils.createOverlayedProperties(
-                        partDesc.getTableDesc().getProperties(),
-                        partDesc.getProperties())
-                        .getProperty(hive_metastoreConstants.META_TABLE_STORAGE));
+
+                String metaTableStorage = null;
+                if (partDesc.getTableDesc() != null &&
+                    partDesc.getTableDesc().getProperties() != null) {
+                  metaTableStorage = partDesc.getTableDesc().getProperties()
+                      .getProperty(hive_metastoreConstants.META_TABLE_STORAGE, null);
+                }
+                if (partDesc.getProperties() != null) {
+                  metaTableStorage = partDesc.getProperties()
+                      .getProperty(hive_metastoreConstants.META_TABLE_STORAGE, metaTableStorage);
+                }
+
+                HiveStorageHandler handler = HiveUtils.getStorageHandler(myConf, metaTableStorage);
                 if (handler instanceof InputEstimator) {
                   long total = 0;
                   TableDesc tableDesc = partDesc.getTableDesc();
@@ -2201,14 +2197,15 @@ public final class Utilities {
                     Utilities.setColumnTypeList(jobConf, scanOp, true);
                     PlanUtils.configureInputJobPropertiesForStorageHandler(tableDesc);
                     Utilities.copyTableJobPropertiesToConf(tableDesc, jobConf);
-                    total += estimator.estimate(myJobConf, scanOp, -1).getTotalLength();
+                    total += estimator.estimate(jobConf, scanOp, -1).getTotalLength();
                   }
                   resultMap.put(pathStr, new ContentSummary(total, -1, -1));
+                } else {
+                  // todo: should nullify summary for non-native tables,
+                  // not to be selected as a mapjoin target
+                  FileSystem fs = p.getFileSystem(myConf);
+                  resultMap.put(pathStr, fs.getContentSummary(p));
                 }
-                // todo: should nullify summary for non-native tables,
-                // not to be selected as a mapjoin target
-                FileSystem fs = p.getFileSystem(myConf);
-                resultMap.put(pathStr, fs.getContentSummary(p));
               } catch (Exception e) {
                 // We safely ignore this exception for summary data.
                 // We don't update the cache to protect it from polluting other
@@ -2981,6 +2978,19 @@ public final class Utilities {
   public static List<Path> getInputPaths(JobConf job, MapWork work, Path hiveScratchDir,
       Context ctx, boolean skipDummy) throws Exception {
 
+    int numThreads = job.getInt("mapred.dfsclient.parallelism.max", 0);
+    ExecutorService pool = null;
+    if (numThreads > 1) {
+      pool = Executors.newFixedThreadPool(numThreads,
+              new ThreadFactoryBuilder().setDaemon(true).setNameFormat("Get-Input-Paths-%d").build());
+    }
+    return getInputPaths(job, work, hiveScratchDir, ctx, skipDummy, pool);
+  }
+
+  @VisibleForTesting
+  static List<Path> getInputPaths(JobConf job, MapWork work, Path hiveScratchDir,
+      Context ctx, boolean skipDummy, ExecutorService pool) throws Exception {
+
     Set<Path> pathsProcessed = new HashSet<Path>();
     List<Path> pathsToAdd = new LinkedList<Path>();
     // AliasToWork contains all the aliases
@@ -2988,32 +2998,35 @@ public final class Utilities {
       LOG.info("Processing alias " + alias);
 
       // The alias may not have any path
-      Path path = null;
+      boolean isEmptyTable = true;
       boolean hasLogged = false;
       // Note: this copies the list because createDummyFileForEmptyPartition may modify the map.
       for (Path file : new LinkedList<Path>(work.getPathToAliases().keySet())) {
         List<String> aliases = work.getPathToAliases().get(file);
         if (aliases.contains(alias)) {
-          path = file;
-
-          // Multiple aliases can point to the same path - it should be
-          // processed only once
-          if (pathsProcessed.contains(path)) {
+          if (file != null) {
+            isEmptyTable = false;
+          } else {
+            LOG.warn("Found a null path for alias " + alias);
             continue;
           }
 
-          pathsProcessed.add(path);
+          // Multiple aliases can point to the same path - it should be
+          // processed only once
+          if (pathsProcessed.contains(file)) {
+            continue;
+          }
+
+          pathsProcessed.add(file);
+
           if (LOG.isDebugEnabled()) {
-            LOG.debug("Adding input file " + path);
+            LOG.debug("Adding input file " + file);
           } else if (!hasLogged) {
             hasLogged = true;
             LOG.info("Adding " + work.getPathToAliases().size()
-                + " inputs; the first input is " + path);
+                + " inputs; the first input is " + file);
           }
-          if (!skipDummy && isEmptyPath(job, path, ctx)) {
-            path = createDummyFileForEmptyPartition(path, job, work, hiveScratchDir);
-          }
-          pathsToAdd.add(path);
+          pathsToAdd.add(file);
         }
       }
 
@@ -3025,12 +3038,56 @@ public final class Utilities {
       // T2) x;
       // If T is empty and T2 contains 100 rows, the user expects: 0, 100 (2
       // rows)
-      if (path == null && !skipDummy) {
-        path = createDummyFileForEmptyTable(job, work, hiveScratchDir, alias);
-        pathsToAdd.add(path);
+      if (isEmptyTable && !skipDummy) {
+        pathsToAdd.add(createDummyFileForEmptyTable(job, work, hiveScratchDir, alias));
       }
     }
-    return pathsToAdd;
+
+    List<Path> finalPathsToAdd = new LinkedList<>();
+    List<Future<Path>> futures = new LinkedList<>();
+    for (final Path path : pathsToAdd) {
+      if (pool == null) {
+        finalPathsToAdd.add(new GetInputPathsCallable(path, job, work, hiveScratchDir, ctx, skipDummy).call());
+      } else {
+        futures.add(pool.submit(new GetInputPathsCallable(path, job, work, hiveScratchDir, ctx, skipDummy)));
+      }
+    }
+
+    if (pool != null) {
+      for (Future<Path> future : futures) {
+        finalPathsToAdd.add(future.get());
+      }
+    }
+
+    return finalPathsToAdd;
+  }
+
+  private static class GetInputPathsCallable implements Callable<Path> {
+
+    private final Path path;
+    private final JobConf job;
+    private final MapWork work;
+    private final Path hiveScratchDir;
+    private final Context ctx;
+    private final boolean skipDummy;
+
+    private GetInputPathsCallable(Path path, JobConf job, MapWork work, Path hiveScratchDir,
+      Context ctx, boolean skipDummy) {
+      this.path = path;
+      this.job = job;
+      this.work = work;
+      this.hiveScratchDir = hiveScratchDir;
+      this.ctx = ctx;
+      this.skipDummy = skipDummy;
+    }
+
+    @Override
+    public Path call() throws Exception {
+      if (!this.skipDummy && isEmptyPath(this.job, this.path, this.ctx)) {
+        return createDummyFileForEmptyPartition(this.path, this.job, this.work, this.hiveScratchDir);
+      }
+      return this.path;
+    }
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
@@ -3737,5 +3794,27 @@ public final class Utilities {
     int exp = (int) (Math.log(bytes) / Math.log(unit));
     String suffix = "KMGTPE".charAt(exp-1) + "";
     return String.format("%.2f%sB", bytes / Math.pow(unit, exp), suffix);
+  }
+
+
+  public static String getAclStringWithHiveModification(Configuration tezConf,
+                                                        String propertyName,
+                                                        boolean addHs2User,
+                                                        String user,
+                                                        String hs2User) throws
+      IOException {
+
+    // Start with initial ACLs
+    ACLConfigurationParser aclConf =
+        new ACLConfigurationParser(tezConf, propertyName);
+
+    // Always give access to the user
+    aclConf.addAllowedUser(user);
+
+    // Give access to the process user if the config is set.
+    if (addHs2User && hs2User != null) {
+      aclConf.addAllowedUser(hs2User);
+    }
+    return aclConf.toAclString();
   }
 }

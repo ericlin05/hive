@@ -42,6 +42,7 @@ TOK_SUBQUERY;
 TOK_INSERT_INTO;
 TOK_DESTINATION;
 TOK_ALLCOLREF;
+TOK_SETCOLREF;
 TOK_TABLE_OR_COL;
 TOK_FUNCTION;
 TOK_FUNCTIONDI;
@@ -273,11 +274,6 @@ TOK_TABLEPROPERTY;
 TOK_IFEXISTS;
 TOK_IFNOTEXISTS;
 TOK_ORREPLACE;
-TOK_HINTLIST;
-TOK_HINT;
-TOK_MAPJOIN;
-TOK_STREAMTABLE;
-TOK_HINTARGLIST;
 TOK_USERSCRIPTCOLNAMES;
 TOK_USERSCRIPTCOLSCHEMA;
 TOK_RECORDREADER;
@@ -390,11 +386,16 @@ TOK_MERGE;
 TOK_MATCHED;
 TOK_NOT_MATCHED;
 TOK_UPDATE;
-TOK_DELETE;TOK_REPL_DUMP;
+TOK_DELETE;
+TOK_REPL_DUMP;
 TOK_REPL_LOAD;
 TOK_REPL_STATUS;
-TOK_BATCH;
 TOK_TO;
+TOK_ONLY;
+TOK_SUMMARY;
+TOK_OPERATOR;
+TOK_EXPRESSION;
+TOK_DETAIL;
 }
 
 
@@ -734,7 +735,28 @@ explainStatement
 explainOption
 @init { msgs.push("explain option"); }
 @after { msgs.pop(); }
-    : KW_EXTENDED|KW_FORMATTED|KW_DEPENDENCY|KW_LOGICAL|KW_AUTHORIZATION|KW_ANALYZE
+    : KW_EXTENDED|KW_FORMATTED|KW_DEPENDENCY|KW_LOGICAL|KW_AUTHORIZATION|KW_ANALYZE|
+      (KW_VECTORIZATION vectorizationOnly? vectorizatonDetail?)
+    ;
+
+vectorizationOnly
+@init { pushMsg("vectorization's only clause", state); }
+@after { popMsg(state); }
+    : KW_ONLY
+    -> ^(TOK_ONLY)
+    ;
+
+vectorizatonDetail
+@init { pushMsg("vectorization's detail level clause", state); }
+@after { popMsg(state); }
+    : KW_SUMMARY
+    -> ^(TOK_SUMMARY)
+    | KW_OPERATOR
+    -> ^(TOK_OPERATOR)
+    | KW_EXPRESSION
+    -> ^(TOK_EXPRESSION)
+    | KW_DETAIL
+    -> ^(TOK_DETAIL)
     ;
 
 execStatement
@@ -795,9 +817,9 @@ replDumpStatement
         (dbName=identifier) (DOT tblName=identifier)?
         (KW_FROM (eventId=Number)
           (KW_TO (rangeEnd=Number))?
-          (KW_BATCH (batchSize=Number))?
+          (KW_LIMIT (batchSize=Number))?
         )?
-    -> ^(TOK_REPL_DUMP $dbName $tblName? ^(TOK_FROM $eventId (TOK_TO $rangeEnd)? (TOK_BATCH $batchSize)?)? )
+    -> ^(TOK_REPL_DUMP $dbName $tblName? ^(TOK_FROM $eventId (TOK_TO $rangeEnd)? (TOK_LIMIT $batchSize)?)? )
     ;
 
 replLoadStatement
@@ -2421,7 +2443,7 @@ fromStatement
 	        )
 	       ^(TOK_INSERT 
 	          ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
-	          ^(TOK_SELECT ^(TOK_SELEXPR TOK_ALLCOLREF))
+	          ^(TOK_SELECT ^(TOK_SELEXPR TOK_SETCOLREF))
 	        )
 	      )
     -> {$fromStatement.tree}
@@ -2505,7 +2527,7 @@ selectStatement
           )
           ^(TOK_INSERT
              ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
-             ^(TOK_SELECT ^(TOK_SELEXPR TOK_ALLCOLREF))
+             ^(TOK_SELECT ^(TOK_SELEXPR TOK_SETCOLREF))
              $o? $c? $d? $sort? $l?
           )
       )
@@ -2524,7 +2546,7 @@ setOpSelectStatement[CommonTree t]
           )
           ^(TOK_INSERT
              ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
-             ^(TOK_SELECTDI ^(TOK_SELEXPR TOK_ALLCOLREF))
+             ^(TOK_SELECTDI ^(TOK_SELEXPR TOK_SETCOLREF))
           )
        )
    -> {$setOpSelectStatement.tree != null && ((CommonTree)u.getTree()).getType()!=HiveParser.TOK_UNIONDISTINCT}?
@@ -2539,7 +2561,7 @@ setOpSelectStatement[CommonTree t]
            )
           ^(TOK_INSERT
             ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
-            ^(TOK_SELECTDI ^(TOK_SELEXPR TOK_ALLCOLREF))
+            ^(TOK_SELECTDI ^(TOK_SELEXPR TOK_SETCOLREF))
          )
        )
    -> ^($u {$t} $b)
@@ -2558,7 +2580,7 @@ setOpSelectStatement[CommonTree t]
           )
           ^(TOK_INSERT
              ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
-             ^(TOK_SELECT ^(TOK_SELEXPR TOK_ALLCOLREF))
+             ^(TOK_SELECT ^(TOK_SELEXPR TOK_SETCOLREF))
           )
        )
    -> {$setOpSelectStatement.tree}

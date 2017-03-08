@@ -72,7 +72,7 @@ PREHOOK: Input: default@orcfile_merge1
 #### A masked pattern was here ####
 -- BEGIN ORC FILE DUMP --
 #### A masked pattern was here ####
-File Version: 0.12 with HIVE_13083
+File Version: 0.12 with ORC_101
 Rows: 50000
 Compression: ZLIB
 Compression size: 4096
@@ -163,7 +163,7 @@ ________________________________________________________________________________
 -- END ORC FILE DUMP --
 -- BEGIN ORC FILE DUMP --
 #### A masked pattern was here ####
-File Version: 0.12 with HIVE_13083
+File Version: 0.12 with ORC_101
 Rows: 50000
 Compression: ZLIB
 Compression size: 4096
@@ -253,8 +253,7 @@ ________________________________________________________________________________
 
 -- END ORC FILE DUMP --
 2	foo	0.8	1	1969-12-31 16:00:00
-PREHOOK: query: -- concatenate
-ALTER TABLE  orcfile_merge1 CONCATENATE
+PREHOOK: query: ALTER TABLE  orcfile_merge1 CONCATENATE
 PREHOOK: type: ALTER_TABLE_MERGE
 PREHOOK: Input: default@orcfile_merge1
 PREHOOK: Output: default@orcfile_merge1
@@ -265,8 +264,7 @@ PREHOOK: type: QUERY
 PREHOOK: Input: default@orc_split_elim
 #### A masked pattern was here ####
 50000
-PREHOOK: query: -- will have double the number of rows
-select count(*) from orcfile_merge1
+PREHOOK: query: select count(*) from orcfile_merge1
 PREHOOK: type: QUERY
 PREHOOK: Input: default@orcfile_merge1
 #### A masked pattern was here ####
@@ -277,7 +275,7 @@ PREHOOK: Input: default@orcfile_merge1
 #### A masked pattern was here ####
 -- BEGIN ORC FILE DUMP --
 #### A masked pattern was here ####
-File Version: 0.12 with HIVE_13083
+File Version: 0.12 with ORC_101
 Rows: 100000
 Compression: ZLIB
 Compression size: 4096

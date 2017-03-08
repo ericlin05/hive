@@ -60,6 +60,7 @@ import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc.ExprNodeDescEqualityWrapper;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDescUtils;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDynamicListDesc;
+import org.apache.hadoop.hive.ql.plan.ExprNodeDynamicValueDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeFieldDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
 import org.apache.hadoop.hive.ql.plan.GroupByDesc;
@@ -73,6 +74,7 @@ import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFEvaluator;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDF;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFBetween;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFIn;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDFInBloomFilter;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPAnd;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPEqual;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPEqualNS;
@@ -494,6 +496,12 @@ public class StatsRulesProcFactory {
       final ExprNodeDesc leftExpression = fd.getChildren().get(2); // left expression
       final ExprNodeDesc rightExpression = fd.getChildren().get(3); // right expression
 
+      // Short circuit and return the current number of rows if this is a
+      // synthetic predicate with dynamic values
+      if (leftExpression instanceof ExprNodeDynamicValueDesc) {
+        return stats.getNumRows();
+      }
+
       // We transform the BETWEEN clause to AND clause (with NOT on top in invert is true).
       // This is more straightforward, as the evaluateExpression method will deal with
       // generating the final row count relying on the basic comparator evaluation methods
@@ -888,18 +896,29 @@ public class StatsRulesProcFactory {
         } else if (udf instanceof GenericUDFOPNotEqual) {
           return numRows;
         } else if (udf instanceof GenericUDFOPEqualOrGreaterThan
-            || udf instanceof GenericUDFOPEqualOrLessThan
-            || udf instanceof GenericUDFOPGreaterThan
-            || udf instanceof GenericUDFOPLessThan) {
+                || udf instanceof GenericUDFOPEqualOrLessThan
+                || udf instanceof GenericUDFOPGreaterThan
+                || udf instanceof GenericUDFOPLessThan) {
           return evaluateComparator(stats, genFunc);
         } else if (udf instanceof GenericUDFOPNotNull) {
-            return evaluateNotNullExpr(stats, genFunc);
+          return evaluateNotNullExpr(stats, genFunc);
         } else if (udf instanceof GenericUDFOPNull) {
           return evaluateColEqualsNullExpr(stats, genFunc);
         } else if (udf instanceof GenericUDFOPAnd || udf instanceof GenericUDFOPOr
-            || udf instanceof GenericUDFIn || udf instanceof GenericUDFBetween
-            || udf instanceof GenericUDFOPNot) {
+                || udf instanceof GenericUDFIn || udf instanceof GenericUDFBetween
+                || udf instanceof GenericUDFOPNot) {
           return evaluateExpression(stats, genFunc, aspCtx, neededCols, fop, evaluatedRowCount);
+        } else if (udf instanceof GenericUDFInBloomFilter) {
+          if (genFunc.getChildren().get(1) instanceof ExprNodeDynamicValueDesc) {
+            // Synthetic predicates from semijoin opt should not affect stats.
+            return numRows;
+          }
+        }
+      } else if (child instanceof ExprNodeConstantDesc) {
+        if (Boolean.FALSE.equals(((ExprNodeConstantDesc) child).getValue())) {
+          return 0;
+        } else {
+          return stats.getNumRows();
         }
       }
 
@@ -1423,7 +1442,12 @@ public class StatsRulesProcFactory {
         // get the join keys from parent ReduceSink operators
         for (int pos = 0; pos < parents.size(); pos++) {
           ReduceSinkOperator parent = (ReduceSinkOperator) jop.getParentOperators().get(pos);
-          Statistics parentStats = parent.getStatistics();
+          Statistics parentStats;
+          try {
+            parentStats = parent.getStatistics().clone();
+          } catch (CloneNotSupportedException e) {
+            throw new SemanticException(ErrorMsg.STATISTICS_CLONING_FAILED.getMsg());
+          }
           keyExprs = StatsUtils.getQualifedReducerKeyNames(parent.getConf()
               .getOutputKeyColumnNames());
 

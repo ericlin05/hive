@@ -33,11 +33,11 @@ STAGE PLANS:
     Tez
 #### A masked pattern was here ####
       Edges:
-        Reducer 10 <- Map 9 (SIMPLE_EDGE), Union 5 (CONTAINS)
-        Reducer 2 <- Map 1 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 10 <- Map 9 (CUSTOM_SIMPLE_EDGE), Union 5 (CONTAINS)
+        Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
         Reducer 4 <- Union 3 (SIMPLE_EDGE), Union 5 (CONTAINS)
         Reducer 6 <- Union 5 (SIMPLE_EDGE)
-        Reducer 8 <- Map 7 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 8 <- Map 7 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
 #### A masked pattern was here ####
       Vertices:
         Map 1 
@@ -273,11 +273,11 @@ STAGE PLANS:
     Tez
 #### A masked pattern was here ####
       Edges:
-        Reducer 10 <- Map 9 (SIMPLE_EDGE), Union 5 (CONTAINS)
-        Reducer 2 <- Map 1 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 10 <- Map 9 (CUSTOM_SIMPLE_EDGE), Union 5 (CONTAINS)
+        Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
         Reducer 4 <- Union 3 (SIMPLE_EDGE), Union 5 (CONTAINS)
         Reducer 6 <- Union 5 (SIMPLE_EDGE)
-        Reducer 8 <- Map 7 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 8 <- Map 7 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
 #### A masked pattern was here ####
       Vertices:
         Map 1 
@@ -508,11 +508,11 @@ STAGE PLANS:
     Tez
 #### A masked pattern was here ####
       Edges:
-        Reducer 10 <- Map 9 (SIMPLE_EDGE), Union 5 (CONTAINS)
-        Reducer 2 <- Map 1 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 10 <- Map 9 (CUSTOM_SIMPLE_EDGE), Union 5 (CONTAINS)
+        Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
         Reducer 4 <- Union 3 (SIMPLE_EDGE), Union 5 (CONTAINS)
         Reducer 6 <- Union 5 (SIMPLE_EDGE)
-        Reducer 8 <- Map 7 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 8 <- Map 7 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
 #### A masked pattern was here ####
       Vertices:
         Map 1 
@@ -1159,7 +1159,7 @@ STAGE PLANS:
       Edges:
         Map 1 <- Union 2 (CONTAINS)
         Reducer 3 <- Union 2 (SIMPLE_EDGE)
-        Reducer 5 <- Map 4 (SIMPLE_EDGE), Union 2 (CONTAINS)
+        Reducer 5 <- Map 4 (CUSTOM_SIMPLE_EDGE), Union 2 (CONTAINS)
 #### A masked pattern was here ####
       Vertices:
         Map 1 
@@ -1315,7 +1315,7 @@ STAGE PLANS:
       Edges:
         Map 7 <- Union 3 (CONTAINS)
         Map 8 <- Union 5 (CONTAINS)
-        Reducer 2 <- Map 1 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
         Reducer 4 <- Union 3 (SIMPLE_EDGE), Union 5 (CONTAINS)
         Reducer 6 <- Union 5 (SIMPLE_EDGE)
 #### A masked pattern was here ####
@@ -1611,7 +1611,7 @@ STAGE PLANS:
         Reducer 47 <- Union 46 (SIMPLE_EDGE), Union 48 (CONTAINS)
         Reducer 49 <- Union 48 (SIMPLE_EDGE)
         Reducer 5 <- Union 4 (SIMPLE_EDGE), Union 6 (CONTAINS)
-        Reducer 50 <- Reducer 49 (SIMPLE_EDGE)
+        Reducer 50 <- Reducer 49 (CUSTOM_SIMPLE_EDGE)
         Reducer 7 <- Union 6 (SIMPLE_EDGE), Union 8 (CONTAINS)
         Reducer 9 <- Union 10 (CONTAINS), Union 8 (SIMPLE_EDGE)
 #### A masked pattern was here ####
@@ -2755,7 +2755,7 @@ STAGE PLANS:
 #### A masked pattern was here ####
       Edges:
         Map 6 <- Union 3 (CONTAINS)
-        Reducer 2 <- Map 1 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
         Reducer 4 <- Union 3 (SIMPLE_EDGE)
         Reducer 5 <- Reducer 4 (SIMPLE_EDGE)
 #### A masked pattern was here ####
@@ -3610,7 +3610,7 @@ STAGE PLANS:
 #### A masked pattern was here ####
       Edges:
         Map 5 <- Union 3 (CONTAINS)
-        Reducer 2 <- Map 1 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
         Reducer 4 <- Union 3 (SIMPLE_EDGE)
 #### A masked pattern was here ####
       Vertices:
@@ -4438,7 +4438,7 @@ STAGE PLANS:
 #### A masked pattern was here ####
       Edges:
         Map 5 <- Union 3 (CONTAINS)
-        Reducer 2 <- Map 1 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
         Reducer 4 <- Union 3 (SIMPLE_EDGE)
 #### A masked pattern was here ####
       Vertices:
@@ -5248,7 +5248,7 @@ STAGE PLANS:
         Map 1 <- Union 2 (CONTAINS)
         Map 5 <- Union 2 (CONTAINS)
         Reducer 3 <- Union 2 (SIMPLE_EDGE)
-        Reducer 4 <- Reducer 3 (SIMPLE_EDGE)
+        Reducer 4 <- Reducer 3 (CUSTOM_SIMPLE_EDGE)
 #### A masked pattern was here ####
       Vertices:
         Map 1 
@@ -5381,10 +5381,10 @@ STAGE PLANS:
         Map 11 <- Union 9 (CONTAINS)
         Map 6 <- Union 3 (CONTAINS)
         Reducer 10 <- Union 9 (SIMPLE_EDGE)
-        Reducer 2 <- Map 1 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
         Reducer 4 <- Union 3 (SIMPLE_EDGE)
         Reducer 5 <- Reducer 10 (SIMPLE_EDGE), Reducer 4 (SIMPLE_EDGE)
-        Reducer 8 <- Map 7 (SIMPLE_EDGE), Union 9 (CONTAINS)
+        Reducer 8 <- Map 7 (CUSTOM_SIMPLE_EDGE), Union 9 (CONTAINS)
 #### A masked pattern was here ####
       Vertices:
         Map 1 
@@ -6544,6 +6544,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns k0,k1,k2,k3,k4,k5
                     columns.comments 
                     columns.types string:string:string:string:string:string
@@ -6565,6 +6566,7 @@ STAGE PLANS:
                     output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
                     properties:
                       bucket_count -1
+                      column.name.delimiter ,
                       columns k0,k1,k2,k3,k4,k5
                       columns.comments 
                       columns.types string:string:string:string:string:string
@@ -6644,6 +6646,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns k1,k2,k3,k4
                     columns.comments 
                     columns.types string:string:string:string
@@ -6665,6 +6668,7 @@ STAGE PLANS:
                     output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
                     properties:
                       bucket_count -1
+                      column.name.delimiter ,
                       columns k1,k2,k3,k4
                       columns.comments 
                       columns.types string:string:string:string
@@ -6719,6 +6723,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns k0,k1,k2,k3,k4,k5
                     columns.comments 
                     columns.types string:string:string:string:string:string
@@ -6740,6 +6745,7 @@ STAGE PLANS:
                     output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
                     properties:
                       bucket_count -1
+                      column.name.delimiter ,
                       columns k0,k1,k2,k3,k4,k5
                       columns.comments 
                       columns.types string:string:string:string:string:string
@@ -6778,6 +6784,7 @@ STAGE PLANS:
                       output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
                       properties:
                         bucket_count -1
+                        column.name.delimiter ,
                         columns k1,k2,k3,k4
                         columns.comments 
                         columns.types string:string:string:string
@@ -6812,6 +6819,7 @@ STAGE PLANS:
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
                 bucket_count -1
+                column.name.delimiter ,
                 columns k1,k2,k3,k4
                 columns.comments 
                 columns.types string:string:string:string
@@ -7757,6 +7765,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,count
                     columns.comments 
                     columns.types string:bigint
@@ -7777,6 +7786,7 @@ STAGE PLANS:
                     properties:
                       COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,count
                       columns.comments 
                       columns.types string:bigint
@@ -7837,6 +7847,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,count
                     columns.comments 
                     columns.types string:bigint
@@ -7857,6 +7868,7 @@ STAGE PLANS:
                     properties:
                       COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,count
                       columns.comments 
                       columns.types string:bigint
@@ -7915,6 +7927,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,count
                     columns.comments 
                     columns.types string:bigint
@@ -7935,6 +7948,7 @@ STAGE PLANS:
                     properties:
                       COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,count
                       columns.comments 
                       columns.types string:bigint
@@ -7993,6 +8007,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,count
                     columns.comments 
                     columns.types string:bigint
@@ -8013,6 +8028,7 @@ STAGE PLANS:
                     properties:
                       COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,count
                       columns.comments 
                       columns.types string:bigint
@@ -8254,6 +8270,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,count
                     columns.comments 
                     columns.types string:bigint
@@ -8274,6 +8291,7 @@ STAGE PLANS:
                     properties:
                       COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,count
                       columns.comments 
                       columns.types string:bigint
@@ -8332,6 +8350,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,count
                     columns.comments 
                     columns.types string:bigint
@@ -8352,6 +8371,7 @@ STAGE PLANS:
                     properties:
                       COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,count
                       columns.comments 
                       columns.types string:bigint
@@ -8426,6 +8446,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,count
                     columns.comments 
                     columns.types string:bigint
@@ -8446,6 +8467,7 @@ STAGE PLANS:
                     properties:
                       COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,count
                       columns.comments 
                       columns.types string:bigint
@@ -8500,6 +8522,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,count
                     columns.comments 
                     columns.types string:bigint
@@ -8520,6 +8543,7 @@ STAGE PLANS:
                     properties:
                       COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,count
                       columns.comments 
                       columns.types string:bigint
@@ -8709,6 +8733,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,count
                     columns.comments 
                     columns.types string:bigint
@@ -8729,6 +8754,7 @@ STAGE PLANS:
                     properties:
                       COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,count
                       columns.comments 
                       columns.types string:bigint
@@ -8787,6 +8813,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,count
                     columns.comments 
                     columns.types string:bigint
@@ -8807,6 +8834,7 @@ STAGE PLANS:
                     properties:
                       COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,count
                       columns.comments 
                       columns.types string:bigint
@@ -8879,6 +8907,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,count
                     columns.comments 
                     columns.types string:bigint
@@ -8899,6 +8928,7 @@ STAGE PLANS:
                     properties:
                       COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,count
                       columns.comments 
                       columns.types string:bigint
@@ -8952,6 +8982,7 @@ STAGE PLANS:
                   properties:
                     COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,count
                     columns.comments 
                     columns.types string:bigint
@@ -8972,6 +9003,7 @@ STAGE PLANS:
                     properties:
                       COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,count
                       columns.comments 
                       columns.types string:bigint
@@ -11328,10 +11360,10 @@ STAGE PLANS:
     Tez
 #### A masked pattern was here ####
       Edges:
-        Reducer 10 <- Map 9 (SIMPLE_EDGE), Union 3 (CONTAINS)
-        Reducer 12 <- Map 11 (SIMPLE_EDGE), Union 5 (CONTAINS)
-        Reducer 14 <- Map 13 (SIMPLE_EDGE), Union 7 (CONTAINS)
-        Reducer 2 <- Map 1 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 10 <- Map 9 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 12 <- Map 11 (CUSTOM_SIMPLE_EDGE), Union 5 (CONTAINS)
+        Reducer 14 <- Map 13 (CUSTOM_SIMPLE_EDGE), Union 7 (CONTAINS)
+        Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
         Reducer 4 <- Union 3 (SIMPLE_EDGE), Union 5 (CONTAINS)
         Reducer 6 <- Union 5 (SIMPLE_EDGE), Union 7 (CONTAINS)
         Reducer 8 <- Union 7 (SIMPLE_EDGE)
@@ -14501,9 +14533,9 @@ STAGE PLANS:
     Tez
 #### A masked pattern was here ####
       Edges:
-        Reducer 2 <- Map 1 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
         Reducer 4 <- Union 3 (SIMPLE_EDGE)
-        Reducer 6 <- Map 5 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 6 <- Map 5 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
 #### A masked pattern was here ####
       Vertices:
         Map 1 
@@ -14670,9 +14702,9 @@ STAGE PLANS:
     Tez
 #### A masked pattern was here ####
       Edges:
-        Reducer 2 <- Map 1 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
         Reducer 4 <- Union 3 (SIMPLE_EDGE)
-        Reducer 6 <- Map 5 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 6 <- Map 5 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
 #### A masked pattern was here ####
       Vertices:
         Map 1 
@@ -14843,7 +14875,7 @@ STAGE PLANS:
 #### A masked pattern was here ####
       Edges:
         Map 5 <- Union 3 (CONTAINS)
-        Reducer 2 <- Map 1 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
         Reducer 4 <- Union 3 (SIMPLE_EDGE)
 #### A masked pattern was here ####
       Vertices:
@@ -15012,7 +15044,7 @@ STAGE PLANS:
 #### A masked pattern was here ####
       Edges:
         Map 5 <- Union 3 (CONTAINS)
-        Reducer 2 <- Map 1 (SIMPLE_EDGE), Union 3 (CONTAINS)
+        Reducer 2 <- Map 1 (CUSTOM_SIMPLE_EDGE), Union 3 (CONTAINS)
         Reducer 4 <- Union 3 (SIMPLE_EDGE)
 #### A masked pattern was here ####
       Vertices:
@@ -15620,7 +15652,7 @@ STAGE PLANS:
         Map 8 <- Union 4 (CONTAINS)
         Reducer 3 <- Union 2 (SIMPLE_EDGE), Union 4 (CONTAINS)
         Reducer 5 <- Union 4 (SIMPLE_EDGE)
-        Reducer 6 <- Reducer 5 (SIMPLE_EDGE)
+        Reducer 6 <- Reducer 5 (CUSTOM_SIMPLE_EDGE)
 #### A masked pattern was here ####
       Vertices:
         Map 1 

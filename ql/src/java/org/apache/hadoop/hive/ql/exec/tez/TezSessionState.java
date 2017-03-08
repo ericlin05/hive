@@ -17,9 +17,7 @@
  */
 package org.apache.hadoop.hive.ql.exec.tez;
 
-
 import java.util.Collection;
-
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -40,9 +38,7 @@ import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
-
 import javax.security.auth.login.LoginException;
-
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FilenameUtils;
 import org.apache.hadoop.conf.Configuration;
@@ -83,6 +79,7 @@ import org.apache.tez.serviceplugins.api.TaskCommunicatorDescriptor;
 import org.apache.tez.serviceplugins.api.TaskSchedulerDescriptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hive.ql.exec.tez.monitoring.TezJobMonitor;
 
 /**
  * Holds session state related to Tez
@@ -311,6 +308,8 @@ public class TezSessionState {
       tezConfig.setInt(TezConfiguration.TEZ_AM_SESSION_MIN_HELD_CONTAINERS, n);
     }
 
+    setupSessionAcls(tezConfig, conf);
+
     final TezClient session = TezClient.newBuilder("HIVE-" + sessionId, tezConfig)
         .setIsSession(true).setLocalResources(commonLocalResources)
         .setCredentials(llapCredentials).setServicePluginDescriptor(servicePluginsDescriptor)
@@ -434,6 +433,31 @@ public class TezSessionState {
     } catch (ExecutionException e) {
       throw new RuntimeException(e);
     }
+  }
+
+  private void setupSessionAcls(Configuration tezConf, HiveConf hiveConf) throws
+      IOException {
+
+    String user = SessionState.getUserFromAuthenticator();
+    UserGroupInformation loginUserUgi = UserGroupInformation.getLoginUser();
+    String loginUser =
+        loginUserUgi == null ? null : loginUserUgi.getShortUserName();
+    boolean addHs2User =
+        HiveConf.getBoolVar(hiveConf, ConfVars.HIVETEZHS2USERACCESS);
+
+    String viewStr = Utilities.getAclStringWithHiveModification(tezConf,
+            TezConfiguration.TEZ_AM_VIEW_ACLS, addHs2User, user, loginUser);
+    String modifyStr = Utilities.getAclStringWithHiveModification(tezConf,
+            TezConfiguration.TEZ_AM_MODIFY_ACLS, addHs2User, user, loginUser);
+
+    if (LOG.isDebugEnabled()) {
+      LOG.debug(
+          "Setting Tez Session access for sessionId={} with viewAclString={}, modifyStr={}",
+          SessionState.get().getSessionId(), viewStr, modifyStr);
+    }
+
+    tezConf.set(TezConfiguration.TEZ_AM_VIEW_ACLS, viewStr);
+    tezConf.set(TezConfiguration.TEZ_AM_MODIFY_ACLS, modifyStr);
   }
 
   public void refreshLocalResourcesFromConf(HiveConf conf)
@@ -671,7 +695,7 @@ public class TezSessionState {
   }
 
   public List<LocalResource> getLocalizedResources() {
-    return new ArrayList<LocalResource>(localizedResources);
+    return new ArrayList<>(localizedResources);
   }
 
   public String getUser() {
@@ -698,4 +722,5 @@ public class TezSessionState {
       }
     } while (!ownerThread.compareAndSet(null, newName));
   }
+
 }

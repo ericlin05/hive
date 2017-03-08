@@ -27,6 +27,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
+import org.apache.hadoop.hive.metastore.ReplChangeManager;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.NotificationEvent;
@@ -40,9 +41,9 @@ import org.apache.hadoop.hive.metastore.messaging.EventUtils;
 import org.apache.hadoop.hive.metastore.messaging.InsertMessage;
 import org.apache.hadoop.hive.metastore.messaging.MessageDeserializer;
 import org.apache.hadoop.hive.metastore.messaging.MessageFactory;
+import org.apache.hadoop.hive.metastore.messaging.PartitionFiles;
 import org.apache.hadoop.hive.ql.ErrorMsg;
 import org.apache.hadoop.hive.ql.QueryState;
-import org.apache.hadoop.hive.ql.exec.ReplCopyTask;
 import org.apache.hadoop.hive.ql.exec.Task;
 import org.apache.hadoop.hive.ql.exec.TaskFactory;
 import org.apache.hadoop.hive.ql.exec.Utilities;
@@ -94,7 +95,7 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
   private String tblNameOrPattern;
   private Long eventFrom;
   private Long eventTo;
-  private Integer batchSize;
+  private Integer maxEventLimit;
   // Base path for REPL LOAD
   private String path;
 
@@ -141,22 +142,24 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
 
     private final Path dumpRoot;
     private final Path dumpFile;
+    private Path cmRoot;
 
     public DumpMetaData(Path dumpRoot) {
       this.dumpRoot = dumpRoot;
       dumpFile = new Path(dumpRoot, DUMPMETADATA);
     }
 
-    public DumpMetaData(Path dumpRoot, DUMPTYPE lvl, Long eventFrom, Long eventTo){
+    public DumpMetaData(Path dumpRoot, DUMPTYPE lvl, Long eventFrom, Long eventTo, Path cmRoot){
       this(dumpRoot);
-      setDump(lvl, eventFrom, eventTo);
+      setDump(lvl, eventFrom, eventTo, cmRoot);
     }
 
-    public void setDump(DUMPTYPE lvl, Long eventFrom, Long eventTo){
+    public void setDump(DUMPTYPE lvl, Long eventFrom, Long eventTo, Path cmRoot){
       this.dumpType = lvl;
       this.eventFrom = eventFrom;
       this.eventTo = eventTo;
       this.initialized = true;
+      this.cmRoot = cmRoot;
     }
 
     public void loadDumpFromFile() throws SemanticException {
@@ -166,9 +169,11 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
         BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(dumpFile)));
         String line = null;
         if ( (line = br.readLine()) != null){
-          String[] lineContents = line.split("\t", 4);
-          setDump(DUMPTYPE.valueOf(lineContents[0]), Long.valueOf(lineContents[1]), Long.valueOf(lineContents[2]));
-          setPayload(lineContents[3].equals(Utilities.nullStringOutput) ? null : lineContents[3]);
+          String[] lineContents = line.split("\t", 5);
+          setDump(DUMPTYPE.valueOf(lineContents[0]), Long.valueOf(lineContents[1]), Long.valueOf(lineContents[2]),
+              new Path(lineContents[3]));
+          setPayload(lineContents[4].equals(Utilities.nullStringOutput) ? null : lineContents[4]);
+          ReplChangeManager.setCmRoot(cmRoot);
         } else {
           throw new IOException("Unable to read valid values from dumpFile:"+dumpFile.toUri().toString());
         }
@@ -201,6 +206,14 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
       return eventTo;
     }
 
+    public Path getCmRoot() {
+      return cmRoot;
+    }
+
+    public void setCmRoot(Path cmRoot) {
+      this.cmRoot = cmRoot;
+    }
+
     public Path getDumpFilePath() {
       return dumpFile;
     }
@@ -217,7 +230,8 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
     }
 
     public void write() throws SemanticException {
-      writeOutput(Arrays.asList(dumpType.toString(), eventFrom.toString(), eventTo.toString(), payload), dumpFile);
+      writeOutput(Arrays.asList(dumpType.toString(), eventFrom.toString(), eventTo.toString(),
+          cmRoot.toString(), payload), dumpFile);
     }
 
   }
@@ -276,8 +290,8 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
                 Long.parseLong(PlanUtils.stripQuotes(fromNode.getChild(numChild + 1).getText()));
             // skip the next child, since we already took care of it
             numChild++;
-          } else if (fromNode.getChild(numChild).getType() == TOK_BATCH) {
-            batchSize =
+          } else if (fromNode.getChild(numChild).getType() == TOK_LIMIT) {
+            maxEventLimit =
                 Integer.parseInt(PlanUtils.stripQuotes(fromNode.getChild(numChild + 1).getText()));
             // skip the next child, since we already took care of it
             numChild++;
@@ -297,10 +311,11 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
   private void analyzeReplDump(ASTNode ast) throws SemanticException {
     LOG.debug("ReplicationSemanticAnalyzer.analyzeReplDump: " + String.valueOf(dbNameOrPattern)
         + "." + String.valueOf(tblNameOrPattern) + " from " + String.valueOf(eventFrom) + " to "
-        + String.valueOf(eventTo) + " batchsize " + String.valueOf(batchSize));
+        + String.valueOf(eventTo) + " maxEventLimit " + String.valueOf(maxEventLimit));
     String replRoot = conf.getVar(HiveConf.ConfVars.REPLDIR);
     Path dumpRoot = new Path(replRoot, getNextDumpDir());
     DumpMetaData dmd = new DumpMetaData(dumpRoot);
+    Path cmRoot = new Path(conf.getVar(HiveConf.ConfVars.REPLCMDIR));
     Long lastReplId;
     try {
       if (eventFrom == null){
@@ -340,7 +355,7 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
         LOG.info(
             "Consolidation done, preparing to return {},{}->{}",
             dumpRoot.toUri(), bootDumpBeginReplId, bootDumpEndReplId);
-        dmd.setDump(DUMPTYPE.BOOTSTRAP, bootDumpBeginReplId, bootDumpEndReplId);
+        dmd.setDump(DUMPTYPE.BOOTSTRAP, bootDumpBeginReplId, bootDumpEndReplId, cmRoot);
         dmd.write();
 
         // Set the correct last repl id to return to the user
@@ -354,35 +369,38 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
         }
 
         Integer maxRange = Ints.checkedCast(eventTo - eventFrom + 1);
-        if (batchSize == null){
-          batchSize = maxRange;
-        } else {
-          if (batchSize > maxRange){
-            batchSize = maxRange;
-          }
+        if ((maxEventLimit == null) || (maxEventLimit > maxRange)){
+          maxEventLimit = maxRange;
         }
+
+        // TODO : instead of simply restricting by message format, we should eventually
+        // move to a jdbc-driver-stype registering of message format, and picking message
+        // factory per event to decode. For now, however, since all messages have the
+        // same factory, restricting by message format is effectively a guard against
+        // older leftover data that would cause us problems.
 
         IMetaStoreClient.NotificationFilter evFilter = EventUtils.andFilter(
             EventUtils.getDbTblNotificationFilter(dbNameOrPattern, tblNameOrPattern),
-            EventUtils.getEventBoundaryFilter(eventFrom, eventTo));
+            EventUtils.getEventBoundaryFilter(eventFrom, eventTo),
+            EventUtils.restrictByMessageFormat(MessageFactory.getInstance().getMessageFormat()));
 
         EventUtils.MSClientNotificationFetcher evFetcher
             = new EventUtils.MSClientNotificationFetcher(db.getMSC());
 
         EventUtils.NotificationEventIterator evIter = new EventUtils.NotificationEventIterator(
-            evFetcher, eventFrom, batchSize, evFilter);
+            evFetcher, eventFrom, maxEventLimit, evFilter);
 
         while (evIter.hasNext()){
           NotificationEvent ev = evIter.next();
           Path evRoot = new Path(dumpRoot, String.valueOf(ev.getEventId()));
-          dumpEvent(ev, evRoot);
+          dumpEvent(ev, evRoot, cmRoot);
         }
 
         LOG.info("Done dumping events, preparing to return {},{}", dumpRoot.toUri(), eventTo);
         writeOutput(
             Arrays.asList("incremental", String.valueOf(eventFrom), String.valueOf(eventTo)),
             dmd.getDumpFilePath());
-        dmd.setDump(DUMPTYPE.INCREMENTAL, eventFrom, eventTo);
+        dmd.setDump(DUMPTYPE.INCREMENTAL, eventFrom, eventTo, cmRoot);
         dmd.write();
         // Set the correct last repl id to return to the user
         lastReplId = eventTo;
@@ -396,7 +414,7 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
     }
   }
 
-  private void dumpEvent(NotificationEvent ev, Path evRoot) throws Exception {
+  private void dumpEvent(NotificationEvent ev, Path evRoot, Path cmRoot) throws Exception {
     long evid = ev.getEventId();
     String evidStr = String.valueOf(evid);
     ReplicationSpec replicationSpec = getNewEventOnlyReplicationSpec(evidStr);
@@ -422,11 +440,24 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
             null,
             replicationSpec);
 
-        // FIXME : dump _files should happen at dbnotif time, doing it here is incorrect
-        // we will, however, do so here, now, for dev/debug's sake.
         Path dataPath = new Path(evRoot, "data");
-        rootTasks.add(ReplCopyTask.getDumpCopyTask(replicationSpec, qlMdTable.getPath(), dataPath , conf));
-        (new DumpMetaData(evRoot, DUMPTYPE.EVENT_CREATE_TABLE, evid, evid)).write();
+        Iterable<String> files = ctm.getFiles();
+        if (files != null) {
+          // encoded filename/checksum of files, write into _files
+          FileSystem fs = dataPath.getFileSystem(conf);
+          Path filesPath = new Path(dataPath, EximUtil.FILES_NAME);
+          BufferedWriter fileListWriter = new BufferedWriter(
+              new OutputStreamWriter(fs.create(filesPath)));
+          try {
+            for (String file : files) {
+              fileListWriter.write(file + "\n");
+            }
+          } finally {
+            fileListWriter.close();
+          }
+        }
+
+        (new DumpMetaData(evRoot, DUMPTYPE.EVENT_CREATE_TABLE, evid, evid, cmRoot)).write();
         break;
       }
       case MessageFactory.ADD_PARTITION_EVENT : {
@@ -470,27 +501,40 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
             qlPtns,
             replicationSpec);
 
-        // FIXME : dump _files should ideally happen at dbnotif time, doing it here introduces
-        // rubberbanding. But, till we have support for that, this is our closest equivalent
+        Iterator<PartitionFiles> partitionFilesIter = apm.getPartitionFilesIter().iterator();
         for (Partition qlPtn : qlPtns){
-          Path ptnDataPath = new Path(evRoot, qlPtn.getName());
-          rootTasks.add(ReplCopyTask.getDumpCopyTask(
-              replicationSpec, qlPtn.getPartitionPath(), ptnDataPath, conf));
+          PartitionFiles partitionFiles = partitionFilesIter.next();
+          Iterable<String> files = partitionFiles.getFiles();
+          if (files != null) {
+            // encoded filename/checksum of files, write into _files
+            Path ptnDataPath = new Path(evRoot, qlPtn.getName());
+            FileSystem fs = ptnDataPath.getFileSystem(conf);
+            Path filesPath = new Path(ptnDataPath, EximUtil.FILES_NAME);
+            BufferedWriter fileListWriter = new BufferedWriter(
+                new OutputStreamWriter(fs.create(filesPath)));
+            try {
+              for (String file : files) {
+                fileListWriter.write(file + "\n");
+              }
+            } finally {
+              fileListWriter.close();
+            }
+          }
         }
 
-        (new DumpMetaData(evRoot, DUMPTYPE.EVENT_ADD_PARTITION, evid, evid)).write();
+        (new DumpMetaData(evRoot, DUMPTYPE.EVENT_ADD_PARTITION, evid, evid, cmRoot)).write();
         break;
       }
       case MessageFactory.DROP_TABLE_EVENT : {
         LOG.info("Processing#{} DROP_TABLE message : {}", ev.getEventId(), ev.getMessage());
-        DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_DROP_TABLE, evid, evid);
+        DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_DROP_TABLE, evid, evid, cmRoot);
         dmd.setPayload(ev.getMessage());
         dmd.write();
         break;
       }
       case MessageFactory.DROP_PARTITION_EVENT : {
         LOG.info("Processing#{} DROP_PARTITION message : {}", ev.getEventId(), ev.getMessage());
-        DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_DROP_PARTITION, evid, evid);
+        DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_DROP_PARTITION, evid, evid, cmRoot);
         dmd.setPayload(ev.getMessage());
         dmd.write();
         break;
@@ -514,12 +558,12 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
               null,
               replicationSpec);
 
-          DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_ALTER_TABLE, evid, evid);
+          DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_ALTER_TABLE, evid, evid, cmRoot);
           dmd.setPayload(ev.getMessage());
           dmd.write();
         } else {
           // rename scenario
-          DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_RENAME_TABLE, evid, evid);
+          DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_RENAME_TABLE, evid, evid, cmRoot);
           dmd.setPayload(ev.getMessage());
           dmd.write();
         }
@@ -556,13 +600,13 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
               qlMdTable,
               qlPtns,
               replicationSpec);
-          DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_ALTER_PARTITION, evid, evid);
+          DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_ALTER_PARTITION, evid, evid, cmRoot);
           dmd.setPayload(ev.getMessage());
           dmd.write();
           break;
         } else {
           // rename scenario
-          DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_RENAME_PARTITION, evid, evid);
+          DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_RENAME_PARTITION, evid, evid, cmRoot);
           dmd.setPayload(ev.getMessage());
           dmd.write();
           break;
@@ -580,23 +624,27 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
         Path metaDataPath = new Path(evRoot, EximUtil.METADATA_NAME);
         EximUtil.createExportDump(metaDataPath.getFileSystem(conf), metaDataPath, qlMdTable, qlPtns,
             replicationSpec);
-        Path dataPath = new Path(evRoot, EximUtil.DATA_PATH_NAME);
-        Path filesPath = new Path(dataPath, EximUtil.FILES_NAME);
-        FileSystem fs = dataPath.getFileSystem(conf);
-        BufferedWriter fileListWriter =
-            new BufferedWriter(new OutputStreamWriter(fs.create(filesPath)));
-        try {
-          // TODO: HIVE-15205: move this metadata generation to a task
-          // Get the encoded filename of files that are being inserted
-          List<String> files = insertMsg.getFiles();
-          for (String fileUriStr : files) {
-            fileListWriter.write(fileUriStr + "\n");
+        Iterable<String> files = insertMsg.getFiles();
+
+        if (files != null) {
+          // encoded filename/checksum of files, write into _files
+          Path dataPath = new Path(evRoot, EximUtil.DATA_PATH_NAME);
+          Path filesPath = new Path(dataPath, EximUtil.FILES_NAME);
+          FileSystem fs = dataPath.getFileSystem(conf);
+          BufferedWriter fileListWriter =
+              new BufferedWriter(new OutputStreamWriter(fs.create(filesPath)));
+
+          try {
+            for (String file : files) {
+              fileListWriter.write(file + "\n");
+            }
+          } finally {
+            fileListWriter.close();
           }
-        } finally {
-          fileListWriter.close();
         }
+
         LOG.info("Processing#{} INSERT message : {}", ev.getEventId(), ev.getMessage());
-        DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_INSERT, evid, evid);
+        DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_INSERT, evid, evid, cmRoot);
         dmd.setPayload(ev.getMessage());
         dmd.write();
         break;
@@ -604,7 +652,7 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
       // TODO : handle other event types
       default:
         LOG.info("Dummy processing#{} message : {}", ev.getEventId(), ev.getMessage());
-        DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_UNKNOWN, evid, evid);
+        DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_UNKNOWN, evid, evid, cmRoot);
         dmd.setPayload(ev.getMessage());
         dmd.write();
         break;
@@ -1301,6 +1349,7 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
     }
 
     prepareReturnValues(Collections.singletonList(replLastId), "last_repl_id#string");
+    setFetchTask(createFetchTask("last_repl_id#string"));
     LOG.debug("ReplicationSemanticAnalyzer.analyzeReplStatus: writing repl.last.id={} out to {}",
         String.valueOf(replLastId), ctx.getResFile());
   }
@@ -1370,5 +1419,4 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
       return db.getDatabasesByPattern(dbPattern);
     }
   }
-
 }

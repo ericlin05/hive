@@ -212,7 +212,7 @@ public class GroupByOperator extends Operator<GroupByDesc> {
     keyObjectInspectors = new ObjectInspector[numKeys];
     currentKeyObjectInspectors = new ObjectInspector[numKeys];
     for (int i = 0; i < numKeys; i++) {
-      keyFields[i] = ExprNodeEvaluatorFactory.get(conf.getKeys().get(i));
+      keyFields[i] = ExprNodeEvaluatorFactory.get(conf.getKeys().get(i), hconf);
       keyObjectInspectors[i] = keyFields[i].initialize(rowInspector);
       currentKeyObjectInspectors[i] = ObjectInspectorUtils
         .getStandardObjectInspector(keyObjectInspectors[i],
@@ -258,7 +258,7 @@ public class GroupByOperator extends Operator<GroupByDesc> {
                 new ExprNodeColumnDesc(TypeInfoUtils.getTypeInfoFromObjectInspector(
                 sf.getFieldObjectInspector()),
                 keyField.getFieldName() + "." + sf.getFieldName(), null,
-                false));
+                false), hconf);
               unionExprEval.initialize(rowInspector);
             }
           }
@@ -283,7 +283,7 @@ public class GroupByOperator extends Operator<GroupByDesc> {
       aggregationParameterObjects[i] = new Object[parameters.size()];
       for (int j = 0; j < parameters.size(); j++) {
         aggregationParameterFields[i][j] = ExprNodeEvaluatorFactory
-            .get(parameters.get(j));
+            .get(parameters.get(j), hconf);
         aggregationParameterObjectInspectors[i][j] = aggregationParameterFields[i][j]
             .initialize(rowInspector);
         if (unionExprEval != null) {
@@ -352,6 +352,21 @@ public class GroupByOperator extends Operator<GroupByDesc> {
       }
     }
 
+    // grouping id should be pruned, which is the last of key columns
+    // see ColumnPrunerGroupByProc
+    outputKeyLength = conf.pruneGroupingSetId() ? keyFields.length - 1 : keyFields.length;
+
+    // init objectInspectors
+    ObjectInspector[] objectInspectors =
+            new ObjectInspector[outputKeyLength + aggregationEvaluators.length];
+    for (int i = 0; i < outputKeyLength; i++) {
+      objectInspectors[i] = currentKeyObjectInspectors[i];
+    }
+    for (int i = 0; i < aggregationEvaluators.length; i++) {
+      objectInspectors[outputKeyLength + i] = aggregationEvaluators[i].init(conf.getAggregators()
+              .get(i).getMode(), aggregationParameterObjectInspectors[i]);
+    }
+
     aggregationsParametersLastInvoke = new Object[conf.getAggregators().size()][];
     if ((conf.getMode() != GroupByDesc.Mode.HASH || conf.getBucketGroup()) &&
       (!groupingSetsPresent)) {
@@ -374,21 +389,6 @@ public class GroupByOperator extends Operator<GroupByDesc> {
 
     List<String> fieldNames = new ArrayList<String>(conf.getOutputColumnNames());
 
-    // grouping id should be pruned, which is the last of key columns
-    // see ColumnPrunerGroupByProc
-    outputKeyLength = conf.pruneGroupingSetId() ? keyFields.length - 1 : keyFields.length;
-
-    // init objectInspectors
-    ObjectInspector[] objectInspectors =
-        new ObjectInspector[outputKeyLength + aggregationEvaluators.length];
-    for (int i = 0; i < outputKeyLength; i++) {
-      objectInspectors[i] = currentKeyObjectInspectors[i];
-    }
-    for (int i = 0; i < aggregationEvaluators.length; i++) {
-      objectInspectors[outputKeyLength + i] = aggregationEvaluators[i].init(conf.getAggregators()
-          .get(i).getMode(), aggregationParameterObjectInspectors[i]);
-    }
-
     outputObjInspector = ObjectInspectorFactory
         .getStandardStructObjectInspector(fieldNames, Arrays.asList(objectInspectors));
 
@@ -407,11 +407,7 @@ public class GroupByOperator extends Operator<GroupByDesc> {
       computeMaxEntriesHashAggr();
     }
     memoryMXBean = ManagementFactory.getMemoryMXBean();
-    if (isLlap || !isTez) {
-      maxMemory = memoryMXBean.getHeapMemoryUsage().getMax();
-    } else {
-      maxMemory = getConf().getMaxMemoryAvailable();
-    }
+    maxMemory = isTez ? getConf().getMaxMemoryAvailable() : memoryMXBean.getHeapMemoryUsage().getMax();
     memoryThreshold = this.getConf().getMemoryThreshold();
     LOG.info("isTez: {} isLlap: {} numExecutors: {} maxMemory: {}", isTez, isLlap, numExecutors, maxMemory);
   }
@@ -427,13 +423,12 @@ public class GroupByOperator extends Operator<GroupByDesc> {
    **/
   private void computeMaxEntriesHashAggr() throws HiveException {
     float memoryPercentage = this.getConf().getGroupByMemoryUsage();
-    if (isLlap || !isTez) {
-      maxHashTblMemory = (long) (memoryPercentage * Runtime.getRuntime().maxMemory());
-    } else {
+    if (isTez) {
       maxHashTblMemory = (long) (memoryPercentage * getConf().getMaxMemoryAvailable());
+    } else {
+      maxHashTblMemory = (long) (memoryPercentage * Runtime.getRuntime().maxMemory());
     }
-    LOG.info("Max hash table memory: memoryPercentage:{}, maxHashTblMemory:{} bytes",
-        memoryPercentage, maxHashTblMemory);
+    LOG.info("Max hash table memory: {} bytes", maxHashTblMemory);
     estimateRowSize();
   }
 
@@ -898,7 +893,11 @@ public class GroupByOperator extends Operator<GroupByDesc> {
       usedMemory = isLlap ? usedMemory / numExecutors : usedMemory;
       rate = (float) usedMemory / (float) maxMemory;
       if(rate > memoryThreshold){
-        return true;
+        if (isTez && numEntriesHashTable == 0) {
+          return false;
+        } else {
+          return true;
+        }
       }
       for (Integer pos : keyPositionsSize) {
         Object key = newKeys.getKeyArray()[pos.intValue()];

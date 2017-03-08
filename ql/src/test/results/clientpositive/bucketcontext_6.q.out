@@ -80,9 +80,9 @@ POSTHOOK: query: load data local inpath '../../data/files/srcsortbucket2outof4.t
 POSTHOOK: type: LOAD
 #### A masked pattern was here ####
 POSTHOOK: Output: default@bucket_big@ds=2008-04-09
-PREHOOK: query: explain extended select /* + MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
+PREHOOK: query: explain extended select /*+ MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
 PREHOOK: type: QUERY
-POSTHOOK: query: explain extended select /* + MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
+POSTHOOK: query: explain extended select /*+ MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
 POSTHOOK: type: QUERY
 STAGE DEPENDENCIES:
   Stage-3 is a root stage
@@ -166,6 +166,7 @@ STAGE PLANS:
             properties:
               bucket_count 2
               bucket_field_name key
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types string:string
@@ -189,6 +190,7 @@ STAGE PLANS:
                 SORTBUCKETCOLSPREFIX TRUE
                 bucket_count 2
                 bucket_field_name key
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types string:string
@@ -213,6 +215,7 @@ STAGE PLANS:
             properties:
               bucket_count 2
               bucket_field_name key
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types string:string
@@ -236,6 +239,7 @@ STAGE PLANS:
                 SORTBUCKETCOLSPREFIX TRUE
                 bucket_count 2
                 bucket_field_name key
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types string:string
@@ -289,14 +293,14 @@ STAGE PLANS:
       Processor Tree:
         ListSink
 
-PREHOOK: query: select /* + MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
+PREHOOK: query: select /*+ MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
 PREHOOK: type: QUERY
 PREHOOK: Input: default@bucket_big
 PREHOOK: Input: default@bucket_big@ds=2008-04-08
 PREHOOK: Input: default@bucket_big@ds=2008-04-09
 PREHOOK: Input: default@bucket_small
 #### A masked pattern was here ####
-POSTHOOK: query: select /* + MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
+POSTHOOK: query: select /*+ MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@bucket_big
 POSTHOOK: Input: default@bucket_big@ds=2008-04-08
@@ -304,9 +308,9 @@ POSTHOOK: Input: default@bucket_big@ds=2008-04-09
 POSTHOOK: Input: default@bucket_small
 #### A masked pattern was here ####
 928
-PREHOOK: query: explain extended select /* + MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
+PREHOOK: query: explain extended select /*+ MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
 PREHOOK: type: QUERY
-POSTHOOK: query: explain extended select /* + MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
+POSTHOOK: query: explain extended select /*+ MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
 POSTHOOK: type: QUERY
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
@@ -355,6 +359,7 @@ STAGE PLANS:
             properties:
               bucket_count 2
               bucket_field_name key
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types string:string
@@ -378,6 +383,7 @@ STAGE PLANS:
                 SORTBUCKETCOLSPREFIX TRUE
                 bucket_count 2
                 bucket_field_name key
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types string:string
@@ -402,6 +408,7 @@ STAGE PLANS:
             properties:
               bucket_count 2
               bucket_field_name key
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types string:string
@@ -425,6 +432,7 @@ STAGE PLANS:
                 SORTBUCKETCOLSPREFIX TRUE
                 bucket_count 2
                 bucket_field_name key
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types string:string
@@ -476,14 +484,14 @@ STAGE PLANS:
       Processor Tree:
         ListSink
 
-PREHOOK: query: select /* + MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
+PREHOOK: query: select /*+ MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
 PREHOOK: type: QUERY
 PREHOOK: Input: default@bucket_big
 PREHOOK: Input: default@bucket_big@ds=2008-04-08
 PREHOOK: Input: default@bucket_big@ds=2008-04-09
 PREHOOK: Input: default@bucket_small
 #### A masked pattern was here ####
-POSTHOOK: query: select /* + MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
+POSTHOOK: query: select /*+ MAPJOIN(a) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@bucket_big
 POSTHOOK: Input: default@bucket_big@ds=2008-04-08

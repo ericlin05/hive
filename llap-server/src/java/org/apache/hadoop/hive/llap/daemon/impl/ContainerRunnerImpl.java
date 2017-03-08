@@ -22,6 +22,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hadoop.conf.Configuration;
@@ -35,6 +36,7 @@ import org.apache.hadoop.hive.llap.daemon.FragmentCompletionHandler;
 import org.apache.hadoop.hive.llap.daemon.HistoryLogger;
 import org.apache.hadoop.hive.llap.daemon.KilledTaskHandler;
 import org.apache.hadoop.hive.llap.daemon.QueryFailedHandler;
+import org.apache.hadoop.hive.llap.daemon.SchedulerFragmentCompletingListener;
 import org.apache.hadoop.hive.llap.daemon.impl.LlapTokenChecker.LlapTokenInfo;
 import org.apache.hadoop.hive.llap.daemon.rpc.LlapDaemonProtocolProtos.FragmentRuntimeInfo;
 import org.apache.hadoop.hive.llap.daemon.rpc.LlapDaemonProtocolProtos.GroupInputSpecProto;
@@ -81,6 +83,8 @@ import com.google.common.base.Preconditions;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 
+import javax.net.SocketFactory;
+
 public class ContainerRunnerImpl extends CompositeService implements ContainerRunner, FragmentCompletionHandler, QueryFailedHandler {
 
   // TODO Setup a set of threads to process incoming requests.
@@ -92,6 +96,7 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
   private final AMReporter amReporter;
   private final QueryTracker queryTracker;
   private final Scheduler<TaskRunnerCallable> executorService;
+  private final SchedulerFragmentCompletingListener completionListener;
   private final AtomicReference<InetSocketAddress> localAddress;
   private final AtomicReference<Integer> localShufflePort;
   private final Map<String, String> localEnv = new HashMap<>();
@@ -104,12 +109,14 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
   private final String clusterId;
   private final DaemonId daemonId;
   private final UgiFactory fsUgiFactory;
+  private final SocketFactory socketFactory;
 
   public ContainerRunnerImpl(Configuration conf, int numExecutors, int waitQueueSize,
       boolean enablePreemption, String[] localDirsBase, AtomicReference<Integer> localShufflePort,
       AtomicReference<InetSocketAddress> localAddress,
       long totalMemoryAvailableBytes, LlapDaemonExecutorMetrics metrics,
-      AMReporter amReporter, ClassLoader classLoader, DaemonId daemonId, UgiFactory fsUgiFactory) {
+      AMReporter amReporter, ClassLoader classLoader, DaemonId daemonId, UgiFactory fsUgiFactory,
+      SocketFactory socketFactory) {
     super("ContainerRunnerImpl");
     Preconditions.checkState(numExecutors > 0,
         "Invalid number of executors: " + numExecutors + ". Must be > 0");
@@ -119,6 +126,7 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
     this.signer = UserGroupInformation.isSecurityEnabled()
         ? new LlapSignerImpl(conf, daemonId.getClusterString()) : null;
     this.fsUgiFactory = fsUgiFactory;
+    this.socketFactory = socketFactory;
 
     this.clusterId = daemonId.getClusterString();
     this.daemonId = daemonId;
@@ -128,6 +136,7 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
         conf, ConfVars.LLAP_DAEMON_WAIT_QUEUE_COMPARATOR_CLASS_NAME);
     this.executorService = new TaskExecutorService(numExecutors, waitQueueSize,
         waitQueueSchedulerClassName, enablePreemption, classLoader, metrics);
+    completionListener = (SchedulerFragmentCompletingListener) executorService;
 
     addIfService(executorService);
 
@@ -171,18 +180,26 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
 
   @Override
   public SubmitWorkResponseProto submitWork(SubmitWorkRequestProto request) throws IOException {
-    LlapTokenInfo tokenInfo = LlapTokenChecker.getTokenInfo(clusterId);
+    LlapTokenInfo tokenInfo = null;
+    try {
+      tokenInfo = LlapTokenChecker.getTokenInfo(clusterId);
+    } catch (SecurityException ex) {
+      logSecurityErrorRarely(null);
+      throw ex;
+    }
     SignableVertexSpec vertex = extractVertexSpec(request, tokenInfo);
     TezEvent initialEvent = extractInitialEvent(request, tokenInfo);
 
-    if (LOG.isInfoEnabled()) {
-      LOG.info("Queueing container for execution: " + stringifySubmitRequest(request, vertex));
-    }
-    QueryIdentifierProto qIdProto = vertex.getQueryIdentifier();
     TezTaskAttemptID attemptId =
         Converters.createTaskAttemptId(vertex.getQueryIdentifier(), vertex.getVertexIndex(),
             request.getFragmentNumber(), request.getAttemptNumber());
     String fragmentIdString = attemptId.toString();
+    if (LOG.isInfoEnabled()) {
+      LOG.info("Queueing container for execution: fragemendId={}, {}",
+          fragmentIdString, stringifySubmitRequest(request, vertex));
+    }
+    QueryIdentifierProto qIdProto = vertex.getQueryIdentifier();
+
     HistoryLogger.logFragmentStart(qIdProto.getApplicationIdString(), request.getContainerIdString(),
         localAddress.get().getHostName(), vertex.getDagName(), qIdProto.getDagIndex(),
         vertex.getVertexName(), request.getFragmentNumber(), request.getAttemptNumber());
@@ -227,7 +244,8 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
           queryIdentifier, qIdProto.getApplicationIdString(), dagId,
           vertex.getDagName(), vertex.getHiveQueryId(), dagIdentifier,
           vertex.getVertexName(), request.getFragmentNumber(), request.getAttemptNumber(),
-          vertex.getUser(), vertex, jobToken, fragmentIdString, tokenInfo);
+          vertex.getUser(), vertex, jobToken, fragmentIdString, tokenInfo, request.getAmHost(),
+          request.getAmPort());
 
       String[] localDirs = fragmentInfo.getLocalDirs();
       Preconditions.checkNotNull(localDirs);
@@ -238,11 +256,12 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
       // Used for re-localization, to add the user specified configuration (conf_pb_binary_stream)
 
       Configuration callableConf = new Configuration(getConfig());
-      UserGroupInformation taskUgi = fsUgiFactory == null ? null : fsUgiFactory.createUgi();
+      UserGroupInformation fsTaskUgi = fsUgiFactory == null ? null : fsUgiFactory.createUgi();
       TaskRunnerCallable callable = new TaskRunnerCallable(request, fragmentInfo, callableConf,
           new ExecutionContextImpl(localAddress.get().getHostName()), env,
           credentials, memoryPerExecutor, amReporter, confParams, metrics, killedTaskHandler,
-          this, tezHadoopShim, attemptId, vertex, initialEvent, taskUgi);
+          this, tezHadoopShim, attemptId, vertex, initialEvent, fsTaskUgi,
+          completionListener, socketFactory);
       submissionState = executorService.schedule(callable);
 
       if (LOG.isInfoEnabled()) {
@@ -296,10 +315,16 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
     NotTezEvent initialEvent = NotTezEvent.parseFrom(initialEventBytes);
     if (tokenInfo.isSigningRequired) {
       if (!request.hasInitialEventSignature()) {
+        logSecurityErrorRarely(tokenInfo.userName);
         throw new SecurityException("Unsigned initial event is not allowed");
       }
       byte[] signatureBytes = request.getInitialEventSignature().toByteArray();
-      signer.checkSignature(initialEventBytes, signatureBytes, initialEvent.getKeyId());
+      try {
+        signer.checkSignature(initialEventBytes, signatureBytes, initialEvent.getKeyId());
+      } catch (SecurityException ex) {
+        logSecurityErrorRarely(tokenInfo.userName);
+        throw ex;
+      }
     }
     return NotTezEventHelper.toTezEvent(initialEvent);
   }
@@ -307,6 +332,7 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
   private void checkSignature(SignableVertexSpec vertex, ByteString vertexBinary,
       SubmitWorkRequestProto request, String tokenUserName) throws SecurityException, IOException {
     if (!request.hasWorkSpecSignature()) {
+      logSecurityErrorRarely(tokenUserName);
       throw new SecurityException("Unsigned fragment not allowed");
     }
     if (vertexBinary == null) {
@@ -314,12 +340,34 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
       vertex.writeTo(os);
       vertexBinary = os.toByteString();
     }
-    signer.checkSignature(vertexBinary.toByteArray(),
-        request.getWorkSpecSignature().toByteArray(), (int)vertex.getSignatureKeyId());
+    try {
+      signer.checkSignature(vertexBinary.toByteArray(),
+          request.getWorkSpecSignature().toByteArray(), (int)vertex.getSignatureKeyId());
+    } catch (SecurityException ex) {
+      logSecurityErrorRarely(tokenUserName);
+      throw ex;
+    }
     if (!vertex.hasUser() || !vertex.getUser().equals(tokenUserName)) {
+      logSecurityErrorRarely(tokenUserName);
       throw new SecurityException("LLAP token is for " + tokenUserName
           + " but the fragment is for " + (vertex.hasUser() ? vertex.getUser() : null));
     }
+  }
+
+  private final AtomicLong lastLoggedError = new AtomicLong(0);
+  private void logSecurityErrorRarely(String userName) {
+    if (!LOG.isWarnEnabled()) return;
+    long time = System.nanoTime();
+    long oldTime = lastLoggedError.get();
+    if (oldTime != 0 && (time - oldTime) < 1000000000L) return; // 1 second
+    if (!lastLoggedError.compareAndSet(oldTime, time)) return;
+    String tokens = null;
+    try {
+      tokens = "" + LlapTokenChecker.getLlapTokens(UserGroupInformation.getCurrentUser(), null);
+    } catch (Exception e) {
+      tokens = "error: " + e.getMessage();
+    }
+    LOG.warn("Security error from " + userName + "; cluster " + clusterId + "; tokens " + tokens);
   }
 
   @Override
@@ -441,11 +489,7 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
   public void queryFailed(QueryIdentifier queryIdentifier) {
     LOG.info("Processing query failed notification for {}", queryIdentifier);
     List<QueryFragmentInfo> knownFragments;
-    try {
-      knownFragments = queryTracker.queryComplete(queryIdentifier, -1, true);
-    } catch (IOException e) {
-      throw new RuntimeException(e); // Should never happen here, no permission check.
-    }
+    knownFragments = queryTracker.getRegisteredFragments(queryIdentifier);
     LOG.info("DBG: Pending fragment count for failed query {} = {}", queryIdentifier,
         knownFragments.size());
     for (QueryFragmentInfo fragmentInfo : knownFragments) {

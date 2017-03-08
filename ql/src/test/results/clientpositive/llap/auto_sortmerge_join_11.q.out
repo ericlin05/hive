@@ -111,7 +111,7 @@ STAGE PLANS:
 #### A masked pattern was here ####
       Edges:
         Map 2 <- Map 1 (BROADCAST_EDGE)
-        Reducer 3 <- Map 2 (SIMPLE_EDGE)
+        Reducer 3 <- Map 2 (CUSTOM_SIMPLE_EDGE)
 #### A masked pattern was here ####
       Vertices:
         Map 1 
@@ -151,6 +151,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 2
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -173,6 +174,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 2
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -241,6 +243,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 4
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -263,6 +266,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 4
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -287,6 +291,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 4
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -309,6 +314,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 4
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -395,7 +401,7 @@ STAGE PLANS:
 #### A masked pattern was here ####
       Edges:
         Map 2 <- Map 1 (BROADCAST_EDGE)
-        Reducer 3 <- Map 2 (SIMPLE_EDGE)
+        Reducer 3 <- Map 2 (CUSTOM_SIMPLE_EDGE)
 #### A masked pattern was here ####
       Vertices:
         Map 1 
@@ -435,6 +441,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 2
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -457,6 +464,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 2
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -525,6 +533,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 4
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -547,6 +556,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 4
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -571,6 +581,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 4
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -593,6 +604,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 4
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -679,7 +691,7 @@ STAGE PLANS:
 #### A masked pattern was here ####
       Edges:
         Map 2 <- Map 1 (BROADCAST_EDGE)
-        Reducer 3 <- Map 2 (SIMPLE_EDGE)
+        Reducer 3 <- Map 2 (CUSTOM_SIMPLE_EDGE)
 #### A masked pattern was here ####
       Vertices:
         Map 1 
@@ -715,6 +727,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 2
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -737,6 +750,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 2
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -801,6 +815,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 4
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -823,6 +838,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 4
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -847,6 +863,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 4
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -869,6 +886,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 4
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -941,9 +959,9 @@ POSTHOOK: Input: default@bucket_small
 POSTHOOK: Input: default@bucket_small@ds=2008-04-08
 #### A masked pattern was here ####
 38
-PREHOOK: query: explain extended select /* + MAPJOIN(a,b) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key JOIN bucket_big c ON a.key = c.key
+PREHOOK: query: explain extended select /*+ MAPJOIN(a,b) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key JOIN bucket_big c ON a.key = c.key
 PREHOOK: type: QUERY
-POSTHOOK: query: explain extended select /* + MAPJOIN(a,b) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key JOIN bucket_big c ON a.key = c.key
+POSTHOOK: query: explain extended select /*+ MAPJOIN(a,b) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key JOIN bucket_big c ON a.key = c.key
 POSTHOOK: type: QUERY
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
@@ -955,7 +973,7 @@ STAGE PLANS:
 #### A masked pattern was here ####
       Edges:
         Map 2 <- Map 1 (BROADCAST_EDGE), Map 4 (BROADCAST_EDGE)
-        Reducer 3 <- Map 2 (SIMPLE_EDGE)
+        Reducer 3 <- Map 2 (CUSTOM_SIMPLE_EDGE)
 #### A masked pattern was here ####
       Vertices:
         Map 1 
@@ -991,6 +1009,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 2
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -1013,6 +1032,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 2
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -1080,6 +1100,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 4
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -1102,6 +1123,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 4
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -1126,6 +1148,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 4
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -1148,6 +1171,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 4
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -1198,6 +1222,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 4
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -1220,6 +1245,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 4
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -1244,6 +1270,7 @@ STAGE PLANS:
                   properties:
                     bucket_count 4
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types string:string
@@ -1266,6 +1293,7 @@ STAGE PLANS:
                     properties:
                       bucket_count 4
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -1321,7 +1349,7 @@ STAGE PLANS:
       Processor Tree:
         ListSink
 
-PREHOOK: query: select /* + MAPJOIN(a,b) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key JOIN bucket_big c ON a.key = c.key
+PREHOOK: query: select /*+ MAPJOIN(a,b) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key JOIN bucket_big c ON a.key = c.key
 PREHOOK: type: QUERY
 PREHOOK: Input: default@bucket_big
 PREHOOK: Input: default@bucket_big@ds=2008-04-08
@@ -1329,7 +1357,7 @@ PREHOOK: Input: default@bucket_big@ds=2008-04-09
 PREHOOK: Input: default@bucket_small
 PREHOOK: Input: default@bucket_small@ds=2008-04-08
 #### A masked pattern was here ####
-POSTHOOK: query: select /* + MAPJOIN(a,b) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key JOIN bucket_big c ON a.key = c.key
+POSTHOOK: query: select /*+ MAPJOIN(a,b) */ count(*) FROM bucket_small a JOIN bucket_big b ON a.key = b.key JOIN bucket_big c ON a.key = c.key
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@bucket_big
 POSTHOOK: Input: default@bucket_big@ds=2008-04-08

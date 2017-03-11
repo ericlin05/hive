@@ -2621,7 +2621,7 @@ public class CalcitePlanner extends SemanticAnalyzer {
         Set<ImmutableBitSet> setTransformedGroupSets =
                 new HashSet<ImmutableBitSet>(groupSets.size());
         for(int val: groupSets) {
-          setTransformedGroupSets.add(convert(val));
+          setTransformedGroupSets.add(convert(val, groupSet.cardinality()));
         }
         // Calcite expects the grouping sets sorted and without duplicates
         transformedGroupSets = new ArrayList<ImmutableBitSet>(setTransformedGroupSets);
@@ -2656,16 +2656,19 @@ public class CalcitePlanner extends SemanticAnalyzer {
       return aggregateRel;
     }
 
-    private ImmutableBitSet convert(int value) {
+    /* This method returns the flip big-endian representation of value */
+    private ImmutableBitSet convert(int value, int length) {
       BitSet bits = new BitSet();
-      int index = 0;
-      while (value != 0L) {
+      for (int index = length - 1; index >= 0; index--) {
         if (value % 2 != 0) {
           bits.set(index);
         }
-        ++index;
         value = value >>> 1;
       }
+      // We flip the bits because Calcite considers that '1'
+      // means that the column participates in the GroupBy
+      // and '0' does not, as opposed to grouping_id.
+      bits.flip(0, length);
       return ImmutableBitSet.FROM_BIT_SET.apply(bits);
     }
 
@@ -2674,11 +2677,11 @@ public class CalcitePlanner extends SemanticAnalyzer {
       if (gByExpr.getType() == HiveParser.DOT
           && gByExpr.getChild(0).getType() == HiveParser.TOK_TABLE_OR_COL) {
         String tab_alias = BaseSemanticAnalyzer.unescapeIdentifier(gByExpr.getChild(0).getChild(0)
-            .getText());
-        String col_alias = BaseSemanticAnalyzer.unescapeIdentifier(gByExpr.getChild(1).getText());
+            .getText().toLowerCase());
+        String col_alias = BaseSemanticAnalyzer.unescapeIdentifier(gByExpr.getChild(1).getText().toLowerCase());
         gByRR.put(tab_alias, col_alias, colInfo);
       } else if (gByExpr.getType() == HiveParser.TOK_TABLE_OR_COL) {
-        String col_alias = BaseSemanticAnalyzer.unescapeIdentifier(gByExpr.getChild(0).getText());
+        String col_alias = BaseSemanticAnalyzer.unescapeIdentifier(gByExpr.getChild(0).getText().toLowerCase());
         String tab_alias = null;
         /*
          * If the input to the GBy has a tab alias for the column, then add an
@@ -3356,10 +3359,11 @@ public class CalcitePlanner extends SemanticAnalyzer {
       final boolean cubeRollupGrpSetPresent = (!qbp.getDestRollups().isEmpty()
               || !qbp.getDestGroupingSets().isEmpty() || !qbp.getDestCubes().isEmpty());
       for (WindowExpressionSpec wExprSpec : windowExpressions) {
-        if (cubeRollupGrpSetPresent) {
+        if (!qbp.getDestToGroupBy().isEmpty()) {
           // Special handling of grouping function
           wExprSpec.setExpression(rewriteGroupingFunctionAST(
-                  getGroupByForClause(qbp, selClauseName), wExprSpec.getExpression()));
+                  getGroupByForClause(qbp, selClauseName), wExprSpec.getExpression(),
+                  !cubeRollupGrpSetPresent));
         }
         if (out_rwsch.getExpression(wExprSpec.getExpression()) == null) {
           Pair<RexNode, TypeInfo> wtp = genWindowingProj(qb, wExprSpec, srcRel);
@@ -3647,9 +3651,10 @@ public class CalcitePlanner extends SemanticAnalyzer {
           TypeCheckCtx tcCtx = new TypeCheckCtx(inputRR);
           // We allow stateful functions in the SELECT list (but nowhere else)
           tcCtx.setAllowStatefulFunctions(true);
-          if (cubeRollupGrpSetPresent) {
+          if (!qbp.getDestToGroupBy().isEmpty()) {
             // Special handling of grouping function
-            expr = rewriteGroupingFunctionAST(getGroupByForClause(qbp, selClauseName), expr);
+            expr = rewriteGroupingFunctionAST(getGroupByForClause(qbp, selClauseName), expr,
+                !cubeRollupGrpSetPresent);
           }
           ExprNodeDesc exp = genExprNodeDesc(expr, inputRR, tcCtx);
           String recommended = recommendName(exp, colAlias);
@@ -4030,11 +4035,12 @@ public class CalcitePlanner extends SemanticAnalyzer {
         }
         ASTNode targetNode = (ASTNode) havingClause.getChild(0);
         validateNoHavingReferenceToAlias(qb, targetNode);
-        final boolean cubeRollupGrpSetPresent = (!qbp.getDestRollups().isEmpty()
-                || !qbp.getDestGroupingSets().isEmpty() || !qbp.getDestCubes().isEmpty());
-        if (cubeRollupGrpSetPresent) {
+        if (!qbp.getDestToGroupBy().isEmpty()) {
+          final boolean cubeRollupGrpSetPresent = (!qbp.getDestRollups().isEmpty()
+                  || !qbp.getDestGroupingSets().isEmpty() || !qbp.getDestCubes().isEmpty());
           // Special handling of grouping function
-          targetNode = rewriteGroupingFunctionAST(getGroupByForClause(qbp, destClauseName), targetNode);
+          targetNode = rewriteGroupingFunctionAST(getGroupByForClause(qbp, destClauseName), targetNode,
+              !cubeRollupGrpSetPresent);
         }
         gbFilter = genFilterRelNode(qb, targetNode, srcRel, aliasToRel, null, null, true);
       }

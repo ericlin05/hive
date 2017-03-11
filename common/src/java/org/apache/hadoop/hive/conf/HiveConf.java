@@ -1162,9 +1162,12 @@ public class HiveConf extends Configuration {
     HIVE_GROUPBY_LIMIT_EXTRASTEP("hive.groupby.limit.extrastep", true, "This parameter decides if Hive should \n" +
         "create new MR job for sorting final output"),
 
-    // Max filesize used to do a single copy (after that, distcp is used)
+    // Max file num and size used to do a single copy (after that, distcp is used)
+    HIVE_EXEC_COPYFILE_MAXNUMFILES("hive.exec.copyfile.maxnumfiles", 1L,
+        "Maximum number of files Hive uses to do sequential HDFS copies between directories." +
+        "Distributed copies (distcp) will be used instead for larger numbers of files so that copies can be done faster."),
     HIVE_EXEC_COPYFILE_MAXSIZE("hive.exec.copyfile.maxsize", 32L * 1024 * 1024 /*32M*/,
-        "Maximum file size (in Mb) that Hive uses to do single HDFS copies between directories." +
+        "Maximum file size (in bytes) that Hive uses to do single HDFS copies between directories." +
         "Distributed copies (distcp) will be used instead for bigger files so that copies can be done faster."),
 
     // for hive udtf operator
@@ -1318,9 +1321,12 @@ public class HiveConf extends Configuration {
         "Maximum fraction of heap that can be used by Parquet file writers in one task.\n" +
         "It is for avoiding OutOfMemory error in tasks. Work with Parquet 1.6.0 and above.\n" +
         "This config parameter is defined in Parquet, so that it does not start with 'hive.'."),
+    @Deprecated
     HIVE_PARQUET_TIMESTAMP_SKIP_CONVERSION("hive.parquet.timestamp.skip.conversion", true,
-      "Current Hive implementation of parquet stores timestamps to UTC, this flag allows skipping of the conversion" +
-      "on reading parquet files from other tools"),
+        "Current Hive implementation of parquet stores timestamps to UTC, this flag allows skipping of the conversion" +
+            "on reading parquet files from other tools"),
+    HIVE_PARQUET_INT96_DEFAULT_UTC_WRITE_ZONE("hive.parquet.mr.int96.enable.utc.write.zone", false,
+        "Enable this variable to use UTC as the default timezone for new Parquet tables."),
     HIVE_INT_TIMESTAMP_CONVERSION_IN_SECONDS("hive.int.timestamp.conversion.in.seconds", false,
         "Boolean/tinyint/smallint/int/bigint value is interpreted as milliseconds during the timestamp conversion.\n" +
         "Set this flag to true to interpret the value as seconds to be consistent with float/double." ),
@@ -1422,7 +1428,7 @@ public class HiveConf extends Configuration {
         "This controls how many partitions can be scanned for each partitioned table.\n" +
         "The default value \"-1\" means no limit. (DEPRECATED: Please use " + ConfVars.METASTORE_LIMIT_PARTITION_REQUEST + " in the metastore instead.)"),
 
-    HIVECONVERTJOINMAXENTRIESHASHTABLE("hive.auto.convert.join.hashtable.max.entries", 4194304L,
+    HIVECONVERTJOINMAXENTRIESHASHTABLE("hive.auto.convert.join.hashtable.max.entries", 40000000L,
         "If hive.auto.convert.join.noconditionaltask is off, this parameter does not take affect. \n" +
         "However, if it is on, and the predicated number of entries in hashtable for a given join \n" +
         "input is larger than this number, the join will not be converted to a mapjoin. \n" +
@@ -1462,6 +1468,8 @@ public class HiveConf extends Configuration {
     HIVETEZLOGLEVEL("hive.tez.log.level", "INFO",
         "The log level to use for tasks executing as part of the DAG.\n" +
         "Used only if hive.tez.java.opts is used to configure Java options."),
+    HIVETEZHS2USERACCESS("hive.tez.hs2.user.access", true,
+        "Whether to grant access to the hs2/hive user for queries"),
     HIVEQUERYNAME ("hive.query.name", null,
         "This named is used by Tez to set the dag name. This name in turn will appear on \n" +
         "the Tez UI representing the work that was done."),
@@ -1789,8 +1797,8 @@ public class HiveConf extends Configuration {
         "org.apache.hadoop.hive.ql.lockmgr.DummyTxnManager",
         "Set to org.apache.hadoop.hive.ql.lockmgr.DbTxnManager as part of turning on Hive\n" +
         "transactions, which also requires appropriate settings for hive.compactor.initiator.on,\n" +
-        "hive.compactor.worker.threads, hive.support.concurrency (true), hive.enforce.bucketing\n" +
-        "(true), and hive.exec.dynamic.partition.mode (nonstrict).\n" +
+        "hive.compactor.worker.threads, hive.support.concurrency (true),\n" +
+        "and hive.exec.dynamic.partition.mode (nonstrict).\n" +
         "The default DummyTxnManager replicates pre-Hive-0.13 behavior and provides\n" +
         "no transactions."),
     HIVE_TXN_STRICT_LOCKING_MODE("hive.txn.strict.locking.mode", true, "In strict mode non-ACID\n" +
@@ -2614,7 +2622,7 @@ public class HiveConf extends Configuration {
     // TODO: Make use of this config to configure fetch size
     HIVE_SERVER2_THRIFT_RESULTSET_MAX_FETCH_SIZE("hive.server2.thrift.resultset.max.fetch.size",
         10000, "Max number of rows sent in one Fetch RPC call by the server to the client."),
-    HIVE_SERVER2_RESULTSET_DEFAULT_FETCH_SIZE("hive.server2.resultset.default.fetch.size", 10000,
+    HIVE_SERVER2_THRIFT_RESULTSET_DEFAULT_FETCH_SIZE("hive.server2.thrift.resultset.default.fetch.size", 1000,
         "The number of rows sent in one Fetch RPC call by the server to the client, if not\n" +
         "specified by the client."),
     HIVE_SERVER2_XSRF_FILTER_ENABLED("hive.server2.xsrf.filter.enabled",false,
@@ -3165,6 +3173,9 @@ public class HiveConf extends Configuration {
       new TimeValidator(TimeUnit.MILLISECONDS),
       "Connection timeout (in milliseconds) before a failure to an LLAP daemon from Tez AM.",
       "llap.task.communicator.connection.timeout-millis"),
+    LLAP_TASK_COMMUNICATOR_LISTENER_THREAD_COUNT(
+        "hive.llap.task.communicator.listener.thread-count", 30,
+        "The number of task communicator listener threads."),
     LLAP_TASK_COMMUNICATOR_CONNECTION_SLEEP_BETWEEN_RETRIES_MS(
       "hive.llap.task.communicator.connection.sleep.between.retries.ms", "2000ms",
       new TimeValidator(TimeUnit.MILLISECONDS),
@@ -3319,6 +3330,10 @@ public class HiveConf extends Configuration {
         new TimeValidator(TimeUnit.SECONDS),
         "Timeout for Running Query in seconds. A nonpositive value means infinite. " +
         "If the query timeout is also set by thrift API call, the smaller one will be taken."),
+
+
+    HIVE_EXEC_INPUT_LISTING_MAX_THREADS("hive.exec.input.listing.max.threads", 0, new  SizeValidator(0L, true, 1024L, true),
+        "Maximum number of threads that Hive uses to list file information from file systems (recommended > 1 for blobstore)."),
 
     /* BLOBSTORE section */
 
@@ -4225,6 +4240,7 @@ public class HiveConf extends Configuration {
     "hive\\.parquet\\..*",
     "hive\\.ppd\\..*",
     "hive\\.prewarm\\..*",
+    "hive\\.server2\\.thrift\\.resultset\\.default\\.fetch\\.size",
     "hive\\.server2\\.proxy\\.user",
     "hive\\.skewjoin\\..*",
     "hive\\.smbjoin\\..*",

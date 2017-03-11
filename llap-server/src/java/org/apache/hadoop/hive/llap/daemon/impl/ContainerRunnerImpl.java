@@ -30,6 +30,7 @@ import org.apache.hadoop.hive.common.UgiFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.llap.DaemonId;
+import org.apache.hadoop.hive.llap.LlapNodeId;
 import org.apache.hadoop.hive.llap.NotTezEventHelper;
 import org.apache.hadoop.hive.llap.daemon.ContainerRunner;
 import org.apache.hadoop.hive.llap.daemon.FragmentCompletionHandler;
@@ -83,6 +84,8 @@ import com.google.common.base.Preconditions;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 
+import javax.net.SocketFactory;
+
 public class ContainerRunnerImpl extends CompositeService implements ContainerRunner, FragmentCompletionHandler, QueryFailedHandler {
 
   // TODO Setup a set of threads to process incoming requests.
@@ -107,12 +110,14 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
   private final String clusterId;
   private final DaemonId daemonId;
   private final UgiFactory fsUgiFactory;
+  private final SocketFactory socketFactory;
 
   public ContainerRunnerImpl(Configuration conf, int numExecutors, int waitQueueSize,
       boolean enablePreemption, String[] localDirsBase, AtomicReference<Integer> localShufflePort,
       AtomicReference<InetSocketAddress> localAddress,
       long totalMemoryAvailableBytes, LlapDaemonExecutorMetrics metrics,
-      AMReporter amReporter, ClassLoader classLoader, DaemonId daemonId, UgiFactory fsUgiFactory) {
+      AMReporter amReporter, ClassLoader classLoader, DaemonId daemonId, UgiFactory fsUgiFactory,
+      SocketFactory socketFactory) {
     super("ContainerRunnerImpl");
     Preconditions.checkState(numExecutors > 0,
         "Invalid number of executors: " + numExecutors + ". Must be > 0");
@@ -122,6 +127,7 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
     this.signer = UserGroupInformation.isSecurityEnabled()
         ? new LlapSignerImpl(conf, daemonId.getClusterString()) : null;
     this.fsUgiFactory = fsUgiFactory;
+    this.socketFactory = socketFactory;
 
     this.clusterId = daemonId.getClusterString();
     this.daemonId = daemonId;
@@ -196,7 +202,9 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
     QueryIdentifierProto qIdProto = vertex.getQueryIdentifier();
 
     HistoryLogger.logFragmentStart(qIdProto.getApplicationIdString(), request.getContainerIdString(),
-        localAddress.get().getHostName(), vertex.getDagName(), qIdProto.getDagIndex(),
+        localAddress.get().getHostName(),
+        constructUniqueQueryId(vertex.getHiveQueryId(), qIdProto.getDagIndex()),
+        qIdProto.getDagIndex(),
         vertex.getVertexName(), request.getFragmentNumber(), request.getAttemptNumber());
 
     // This is the start of container-annotated logging.
@@ -235,11 +243,12 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
 
       Token<JobTokenIdentifier> jobToken = TokenCache.getSessionToken(credentials);
 
+      LlapNodeId amNodeId = LlapNodeId.getInstance(request.getAmHost(), request.getAmPort());
       QueryFragmentInfo fragmentInfo = queryTracker.registerFragment(
           queryIdentifier, qIdProto.getApplicationIdString(), dagId,
           vertex.getDagName(), vertex.getHiveQueryId(), dagIdentifier,
           vertex.getVertexName(), request.getFragmentNumber(), request.getAttemptNumber(),
-          vertex.getUser(), vertex, jobToken, fragmentIdString, tokenInfo);
+          vertex.getUser(), vertex, jobToken, fragmentIdString, tokenInfo, amNodeId);
 
       String[] localDirs = fragmentInfo.getLocalDirs();
       Preconditions.checkNotNull(localDirs);
@@ -250,12 +259,12 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
       // Used for re-localization, to add the user specified configuration (conf_pb_binary_stream)
 
       Configuration callableConf = new Configuration(getConfig());
-      UserGroupInformation taskUgi = fsUgiFactory == null ? null : fsUgiFactory.createUgi();
+      UserGroupInformation fsTaskUgi = fsUgiFactory == null ? null : fsUgiFactory.createUgi();
       TaskRunnerCallable callable = new TaskRunnerCallable(request, fragmentInfo, callableConf,
           new ExecutionContextImpl(localAddress.get().getHostName()), env,
           credentials, memoryPerExecutor, amReporter, confParams, metrics, killedTaskHandler,
-          this, tezHadoopShim, attemptId, vertex, initialEvent, taskUgi,
-          completionListener);
+          this, tezHadoopShim, attemptId, vertex, initialEvent, fsTaskUgi,
+          completionListener, socketFactory);
       submissionState = executorService.schedule(callable);
 
       if (LOG.isInfoEnabled()) {
@@ -382,14 +391,17 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
         new QueryIdentifier(request.getQueryIdentifier().getApplicationIdString(),
             request.getQueryIdentifier().getDagIndex());
     LOG.info("Processing queryComplete notification for {}", queryIdentifier);
-    List<QueryFragmentInfo> knownFragments = queryTracker.queryComplete(
-        queryIdentifier, request.getDeleteDelay(), false);
-    LOG.info("DBG: Pending fragment count for completed query {} = {}", queryIdentifier,
+    QueryInfo queryInfo = queryTracker.queryComplete(queryIdentifier, request.getDeleteDelay(), false);
+    if (queryInfo != null) {
+      List<QueryFragmentInfo> knownFragments = queryInfo.getRegisteredFragments();
+      LOG.info("DBG: Pending fragment count for completed query {} = {}", queryIdentifier,
         knownFragments.size());
-    for (QueryFragmentInfo fragmentInfo : knownFragments) {
-      LOG.info("Issuing killFragment for completed query {} {}", queryIdentifier,
+      for (QueryFragmentInfo fragmentInfo : knownFragments) {
+        LOG.info("Issuing killFragment for completed query {} {}", queryIdentifier,
           fragmentInfo.getFragmentIdentifierString());
-      executorService.killFragment(fragmentInfo.getFragmentIdentifierString());
+        executorService.killFragment(fragmentInfo.getFragmentIdentifierString());
+      }
+      amReporter.queryComplete(queryIdentifier);
     }
     return QueryCompleteResponseProto.getDefaultInstance();
   }
@@ -496,14 +508,20 @@ public class ContainerRunnerImpl extends CompositeService implements ContainerRu
   private class KilledTaskHandlerImpl implements KilledTaskHandler {
 
     @Override
-    public void taskKilled(String amLocation, int port, String user,
+    public void taskKilled(String amLocation, int port, String umbilicalUser,
                            Token<JobTokenIdentifier> jobToken, QueryIdentifier queryIdentifier,
                            TezTaskAttemptID taskAttemptId) {
-      amReporter.taskKilled(amLocation, port, user, jobToken, queryIdentifier, taskAttemptId);
+      amReporter.taskKilled(amLocation, port, umbilicalUser, jobToken, queryIdentifier, taskAttemptId);
     }
   }
 
   public Set<String> getExecutorStatus() {
     return executorService.getExecutorsStatus();
   }
+
+  public static String constructUniqueQueryId(String queryId, int dagIndex) {
+    // Hive QueryId is not always unique.
+    return queryId + "-" + dagIndex;
+  }
+
 }

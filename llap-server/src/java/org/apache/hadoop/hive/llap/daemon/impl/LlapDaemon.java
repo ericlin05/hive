@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import javax.management.ObjectName;
+import javax.net.SocketFactory;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.common.JvmPauseMonitor;
@@ -52,6 +53,7 @@ import org.apache.hadoop.hive.llap.daemon.rpc.LlapDaemonProtocolProtos.Terminate
 import org.apache.hadoop.hive.llap.daemon.services.impl.LlapWebServices;
 import org.apache.hadoop.hive.llap.io.api.LlapProxy;
 import org.apache.hadoop.hive.llap.metrics.LlapDaemonExecutorMetrics;
+import org.apache.hadoop.hive.llap.metrics.LlapDaemonJvmMetrics;
 import org.apache.hadoop.hive.llap.metrics.LlapMetricsSystem;
 import org.apache.hadoop.hive.llap.metrics.MetricsUtils;
 import org.apache.hadoop.hive.llap.registry.impl.LlapRegistryService;
@@ -64,6 +66,7 @@ import org.apache.hadoop.hive.ql.udf.generic.GenericUDF;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFBridge;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFBridge.UdfWhitelistChecker;
 import org.apache.hadoop.metrics2.util.MBeans;
+import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.service.CompositeService;
 import org.apache.hadoop.util.ExitUtil;
@@ -105,6 +108,7 @@ public class LlapDaemon extends CompositeService implements ContainerRunner, Lla
   private final long maxJvmMemory;
   private final String[] localDirs;
   private final DaemonId daemonId;
+  private final SocketFactory socketFactory;
 
   // TODO Not the best way to share the address
   private final AtomicReference<InetSocketAddress> srvAddress = new AtomicReference<>(),
@@ -228,8 +232,10 @@ public class LlapDaemon extends CompositeService implements ContainerRunner, Lla
     LlapMetricsSystem.initialize("LlapDaemon");
     this.pauseMonitor = new JvmPauseMonitor(daemonConf);
     pauseMonitor.start();
-    String displayName = "LlapDaemonExecutorMetrics-" + hostName;
+    String displayNameJvm = "LlapDaemonJvmMetrics-" + hostName;
     String sessionId = MetricsUtils.getUUID();
+    LlapDaemonJvmMetrics.create(displayNameJvm, sessionId);
+    String displayName = "LlapDaemonExecutorMetrics-" + hostName;
     daemonConf.set("llap.daemon.metrics.sessionid", sessionId);
     String[] strIntervals = HiveConf.getTrimmedStringsVar(daemonConf,
         HiveConf.ConfVars.LLAP_DAEMON_TASK_PREEMPTION_METRICS_INTERVALS);
@@ -250,13 +256,16 @@ public class LlapDaemon extends CompositeService implements ContainerRunner, Lla
     this.metrics.setCacheMemoryPerInstance(ioMemoryBytes);
     this.metrics.setJvmMaxMemory(maxJvmMemory);
     this.metrics.setWaitQueueSize(waitQueueSize);
+    // TODO: Has to be reverted in HIVE-15644
+    //this.metrics.getJvmMetrics().setPauseMonitor(pauseMonitor);
     this.llapDaemonInfoBean = MBeans.register("LlapDaemon", "LlapDaemonInfo", this);
     LOG.info("Started LlapMetricsSystem with displayName: " + displayName +
         " sessionId: " + sessionId);
 
     int maxAmReporterThreads = HiveConf.getIntVar(daemonConf, ConfVars.LLAP_DAEMON_AM_REPORTER_MAX_THREADS);
+    this.socketFactory = NetUtils.getDefaultSocketFactory(daemonConf);
     this.amReporter = new AMReporter(numExecutors, maxAmReporterThreads, srvAddress,
-        new QueryFailedHandlerProxy(), daemonConf, daemonId);
+        new QueryFailedHandlerProxy(), daemonConf, daemonId, socketFactory);
 
     SecretManager sm = null;
     if (UserGroupInformation.isSecurityEnabled()) {
@@ -274,7 +283,7 @@ public class LlapDaemon extends CompositeService implements ContainerRunner, Lla
     }
     this.containerRunner = new ContainerRunnerImpl(daemonConf, numExecutors, waitQueueSize,
         enablePreemption, localDirs, this.shufflePort, srvAddress, executorMemoryPerInstance, metrics,
-        amReporter, executorClassLoader, daemonId, fsUgiFactory);
+        amReporter, executorClassLoader, daemonId, fsUgiFactory, socketFactory);
     addIfService(containerRunner);
 
     // Not adding the registry as a service, since we need to control when it is initialized - conf used to pickup properties.

@@ -386,16 +386,17 @@ TOK_MERGE;
 TOK_MATCHED;
 TOK_NOT_MATCHED;
 TOK_UPDATE;
-TOK_DELETE;TOK_REPL_DUMP;
+TOK_DELETE;
+TOK_REPL_DUMP;
 TOK_REPL_LOAD;
 TOK_REPL_STATUS;
-TOK_BATCH;
 TOK_TO;
 TOK_ONLY;
 TOK_SUMMARY;
 TOK_OPERATOR;
 TOK_EXPRESSION;
 TOK_DETAIL;
+TOK_BLOCKING;
 }
 
 
@@ -559,6 +560,9 @@ import org.apache.hadoop.hive.conf.HiveConf;
     xlateMap.put("KW_NORELY", "NORELY");
     xlateMap.put("KW_ABORT", "ABORT");
     xlateMap.put("KW_TRANSACTIONS", "TRANSACTIONS");
+    xlateMap.put("KW_COMPACTIONS", "COMPACTIONS");
+    xlateMap.put("KW_COMPACT", "COMPACT");
+    xlateMap.put("KW_WAIT", "WAIT");
 
     // Operators
     xlateMap.put("DOT", ".");
@@ -817,9 +821,9 @@ replDumpStatement
         (dbName=identifier) (DOT tblName=identifier)?
         (KW_FROM (eventId=Number)
           (KW_TO (rangeEnd=Number))?
-          (KW_BATCH (batchSize=Number))?
+          (KW_LIMIT (batchSize=Number))?
         )?
-    -> ^(TOK_REPL_DUMP $dbName $tblName? ^(TOK_FROM $eventId (TOK_TO $rangeEnd)? (TOK_BATCH $batchSize)?)? )
+    -> ^(TOK_REPL_DUMP $dbName $tblName? ^(TOK_FROM $eventId (TOK_TO $rangeEnd)? (TOK_LIMIT $batchSize)?)? )
     ;
 
 replLoadStatement
@@ -1446,11 +1450,16 @@ alterStatementSuffixBucketNum
     -> ^(TOK_ALTERTABLE_BUCKETS $num)
     ;
 
+blocking
+  : KW_AND KW_WAIT
+  -> TOK_BLOCKING
+  ;
+
 alterStatementSuffixCompact
 @init { msgs.push("compaction request"); }
 @after { msgs.pop(); }
-    : KW_COMPACT compactType=StringLiteral (KW_WITH KW_OVERWRITE KW_TBLPROPERTIES tableProperties)?
-    -> ^(TOK_ALTERTABLE_COMPACT $compactType tableProperties?)
+    : KW_COMPACT compactType=StringLiteral blocking? (KW_WITH KW_OVERWRITE KW_TBLPROPERTIES tableProperties)?
+    -> ^(TOK_ALTERTABLE_COMPACT $compactType blocking? tableProperties?)
     ;
 
 

@@ -22,9 +22,10 @@ import org.apache.hadoop.hive.ql.exec.Description;
 import org.apache.hadoop.hive.ql.exec.UDFArgumentTypeException;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFMkCollectionEvaluator.BufferType;
+import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 
-@Description(name = "collect_list", value = "_FUNC_(x) - Returns a list of objects with duplicates")
+@Description(name = "collect_list", value = "_FUNC_(x, y) - Returns a list of objects with duplicates")
 public class GenericUDAFCollectList extends AbstractGenericUDAFResolver {
 
   public GenericUDAFCollectList() {
@@ -33,9 +34,9 @@ public class GenericUDAFCollectList extends AbstractGenericUDAFResolver {
   @Override
   public GenericUDAFEvaluator getEvaluator(TypeInfo[] parameters)
       throws SemanticException {
-    if (parameters.length != 1) {
+    if (parameters.length < 1 || parameters.length > 2) {
       throw new UDFArgumentTypeException(parameters.length - 1,
-          "Exactly one argument is expected.");
+              "Expecting 1 or 2 parameters");
     }
 
     switch (parameters[0].getCategory()) {
@@ -49,6 +50,14 @@ public class GenericUDAFCollectList extends AbstractGenericUDAFResolver {
             "Only primitive, struct, list or map type arguments are accepted but "
                 + parameters[0].getTypeName() + " was passed as parameter 1.");
     }
+
+
+    if(parameters.length == 2 && !parameters[1].getTypeName().equals(serdeConstants.BOOLEAN_TYPE_NAME)) {
+      throw new UDFArgumentTypeException(1,
+              "Only boolean type argument is accepted but "
+                      + parameters[1].getTypeName() + " was passed as parameter 2.");
+    }
+
     return new GenericUDAFMkCollectionEvaluator(BufferType.LIST);
   }
 }

@@ -30,6 +30,7 @@ import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils;
 import org.apache.hadoop.hive.serde2.objectinspector.StandardListObjectInspector;
+import org.apache.hadoop.io.BooleanWritable;
 
 public class GenericUDAFMkCollectionEvaluator extends GenericUDAFEvaluator
     implements Serializable {
@@ -112,11 +113,18 @@ public class GenericUDAFMkCollectionEvaluator extends GenericUDAFEvaluator
   @Override
   public void iterate(AggregationBuffer agg, Object[] parameters)
       throws HiveException {
-    assert (parameters.length == 1);
+    assert (parameters.length <= 2);
     Object p = parameters[0];
+    boolean includeNull = false;
 
-    MkArrayAggregationBuffer myagg = (MkArrayAggregationBuffer) agg;
-    putIntoCollection(p, myagg);
+    if(parameters.length == 2) {
+      includeNull = ((BooleanWritable) parameters[1]).get();
+    }
+
+    if (includeNull || p != null) {
+      MkArrayAggregationBuffer myagg = (MkArrayAggregationBuffer) agg;
+      putIntoCollection(p, myagg);
+    }
   }
 
   //mapside

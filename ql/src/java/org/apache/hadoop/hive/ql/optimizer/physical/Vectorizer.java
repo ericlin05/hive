@@ -35,8 +35,8 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.Stack;
 import java.util.regex.Pattern;
-import org.apache.commons.lang.ArrayUtils;
 
+import org.apache.commons.lang.ArrayUtils;
 import org.apache.calcite.util.Pair;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.slf4j.Logger;
@@ -442,6 +442,9 @@ public class Vectorizer implements PhysicalPlanResolver {
 
     Set<Operator<? extends OperatorDesc>> nonVectorizedOps;
 
+    String reduceColumnSortOrder;
+    String reduceColumnNullOrder;
+
     VectorTaskColumnInfo() {
       partitionColumnCount = 0;
     }
@@ -488,6 +491,14 @@ public class Vectorizer implements PhysicalPlanResolver {
       return nonVectorizedOps;
     }
 
+    public void setReduceColumnSortOrder(String reduceColumnSortOrder) {
+      this.reduceColumnSortOrder = reduceColumnSortOrder;
+    }
+
+    public void setReduceColumnNullOrder(String reduceColumnNullOrder) {
+      this.reduceColumnNullOrder = reduceColumnNullOrder;
+    }
+
     public void transferToBaseWork(BaseWork baseWork) {
 
       String[] allColumnNameArray = allColumnNames.toArray(new String[0]);
@@ -511,6 +522,12 @@ public class Vectorizer implements PhysicalPlanResolver {
       if (baseWork instanceof MapWork) {
         MapWork mapWork = (MapWork) baseWork;
         mapWork.setUseVectorizedInputFileFormat(useVectorizedInputFileFormat);
+      }
+
+      if (baseWork instanceof ReduceWork) {
+        ReduceWork reduceWork = (ReduceWork) baseWork;
+        reduceWork.setVectorReduceColumnSortOrder(reduceColumnSortOrder);
+        reduceWork.setVectorReduceColumnNullOrder(reduceColumnNullOrder);
       }
 
       baseWork.setAllNative(allNative);
@@ -749,6 +766,7 @@ public class Vectorizer implements PhysicalPlanResolver {
       if (!isSchemaEvolution) {
         enabledConditionsNotMetList.add(
             "Vectorizing tables without Schema Evolution requires " + HiveConf.ConfVars.HIVE_VECTORIZATION_USE_VECTORIZED_INPUT_FILE_FORMAT.varname);
+        return false;
       }
 
       String deserializerClassName = pd.getDeserializerClassName();
@@ -1149,6 +1167,8 @@ public class Vectorizer implements PhysicalPlanResolver {
         return false;
       }
 
+      String columnSortOrder;
+      String columnNullOrder;
       try {
         TableDesc keyTableDesc = reduceWork.getKeyDesc();
         if (LOG.isDebugEnabled()) {
@@ -1156,10 +1176,11 @@ public class Vectorizer implements PhysicalPlanResolver {
         }
         TableDesc valueTableDesc = reduceWork.getTagToValueDesc().get(reduceWork.getTag());
 
+        Properties keyTableProperties = keyTableDesc.getProperties();
         Deserializer keyDeserializer =
             ReflectionUtils.newInstance(
                 keyTableDesc.getDeserializerClass(), null);
-        SerDeUtils.initializeSerDe(keyDeserializer, null, keyTableDesc.getProperties(), null);
+        SerDeUtils.initializeSerDe(keyDeserializer, null, keyTableProperties, null);
         ObjectInspector keyObjectInspector = keyDeserializer.getObjectInspector();
         if (keyObjectInspector == null) {
           setNodeIssue("Key object inspector null");
@@ -1176,6 +1197,9 @@ public class Vectorizer implements PhysicalPlanResolver {
           reduceColumnNames.add(Utilities.ReduceField.KEY.toString() + "." + field.getFieldName());
           reduceTypeInfos.add(TypeInfoUtils.getTypeInfoFromTypeString(field.getFieldObjectInspector().getTypeName()));
         }
+
+        columnSortOrder = keyTableProperties.getProperty(serdeConstants.SERIALIZATION_SORT_ORDER);
+        columnNullOrder = keyTableProperties.getProperty(serdeConstants.SERIALIZATION_NULL_SORT_ORDER);
 
         Deserializer valueDeserializer =
             ReflectionUtils.newInstance(
@@ -1202,6 +1226,9 @@ public class Vectorizer implements PhysicalPlanResolver {
       vectorTaskColumnInfo.setAllColumnNames(reduceColumnNames);
       vectorTaskColumnInfo.setAllTypeInfos(reduceTypeInfos);
 
+      vectorTaskColumnInfo.setReduceColumnSortOrder(columnSortOrder);
+      vectorTaskColumnInfo.setReduceColumnNullOrder(columnNullOrder);
+      
       return true;
     }
 
@@ -2021,17 +2048,6 @@ public class Vectorizer implements PhysicalPlanResolver {
       return false;
     }
 
-    if (processingMode == ProcessingMode.MERGE_PARTIAL) {
-      // For now, VectorGroupByOperator ProcessingModeReduceMergePartial cannot handle key
-      // expressions.
-      for (ExprNodeDesc keyExpr : desc.getKeys()) {
-        if (!(keyExpr instanceof ExprNodeColumnDesc)) {
-          setExpressionIssue("Key", "Non-column key expressions not supported for MERGEPARTIAL");
-          return false;
-        }
-      }
-    }
-
     Pair<Boolean,Boolean> retPair =
         validateAggregationDescs(desc.getAggregators(), processingMode, hasKeys);
     if (!retPair.left) {
@@ -2514,7 +2530,7 @@ public class Vectorizer implements PhysicalPlanResolver {
     vectorDesc.setVectorMapJoinInfo(vectorMapJoinInfo);
 
     vectorOp = OperatorFactory.getVectorOperator(
-        opClass, op.getCompilationOpContext(), op.getConf(), vContext);
+        opClass, op.getCompilationOpContext(), op.getConf(), vContext, op);
     LOG.info("Vectorizer vectorizeOperator map join class " + vectorOp.getClass().getSimpleName());
 
     return vectorOp;
@@ -2979,7 +2995,7 @@ public class Vectorizer implements PhysicalPlanResolver {
     Operator<? extends OperatorDesc> vectorOp = null;
     try {
       vectorOp = OperatorFactory.getVectorOperator(
-          opClass, op.getCompilationOpContext(), op.getConf(), vContext);
+          opClass, op.getCompilationOpContext(), op.getConf(), vContext, op);
     } catch (Exception e) {
       LOG.info("Vectorizer vectorizeOperator reduce sink class exception " + opClass.getSimpleName() +
           " exception " + e);
@@ -3257,7 +3273,7 @@ public class Vectorizer implements PhysicalPlanResolver {
         vContext.getVectorExpression(predicateExpr, VectorExpressionDescriptor.Mode.FILTER);
     vectorFilterDesc.setPredicateExpression(vectorPredicateExpr);
     return OperatorFactory.getVectorOperator(
-        filterOp.getCompilationOpContext(), filterDesc, vContext);
+        filterOp.getCompilationOpContext(), filterDesc, vContext, filterOp);
   }
 
   /*
@@ -3285,7 +3301,7 @@ public class Vectorizer implements PhysicalPlanResolver {
     vectorGroupByDesc.setAggregators(vecAggregators);
     vectorGroupByDesc.setProjectedOutputColumns(projectedOutputColumns);
     return OperatorFactory.getVectorOperator(
-        groupByOp.getCompilationOpContext(), groupByDesc, vContext);
+        groupByOp.getCompilationOpContext(), groupByDesc, vContext, groupByOp);
   }
 
   public static Operator<? extends OperatorDesc> vectorizeSelectOperator(
@@ -3315,7 +3331,7 @@ public class Vectorizer implements PhysicalPlanResolver {
     vectorSelectDesc.setSelectExpressions(vectorSelectExprs);
     vectorSelectDesc.setProjectedOutputColumns(projectedOutputColumns);
     return OperatorFactory.getVectorOperator(
-        selectOp.getCompilationOpContext(), selectDesc, vContext);
+        selectOp.getCompilationOpContext(), selectDesc, vContext, selectOp);
   }
 
   public Operator<? extends OperatorDesc> vectorizeOperator(Operator<? extends OperatorDesc> op,
@@ -3351,7 +3367,7 @@ public class Vectorizer implements PhysicalPlanResolver {
               }
   
               vectorOp = OperatorFactory.getVectorOperator(
-                  opClass, op.getCompilationOpContext(), op.getConf(), vContext);
+                  opClass, op.getCompilationOpContext(), op.getConf(), vContext, op);
               isNative = false;
             } else {
   
@@ -3377,7 +3393,7 @@ public class Vectorizer implements PhysicalPlanResolver {
             VectorSMBJoinDesc vectorSMBJoinDesc = new VectorSMBJoinDesc();
             smbJoinSinkDesc.setVectorDesc(vectorSMBJoinDesc);
             vectorOp = OperatorFactory.getVectorOperator(
-                op.getCompilationOpContext(), smbJoinSinkDesc, vContext);
+                op.getCompilationOpContext(), smbJoinSinkDesc, vContext, op);
             isNative = false;
           }
         }
@@ -3392,7 +3408,7 @@ public class Vectorizer implements PhysicalPlanResolver {
           if (!specialize) {
 
             vectorOp = OperatorFactory.getVectorOperator(
-                op.getCompilationOpContext(), op.getConf(), vContext);
+                op.getCompilationOpContext(), op.getConf(), vContext, op);
             isNative = false;
           } else {
 
@@ -3468,7 +3484,7 @@ public class Vectorizer implements PhysicalPlanResolver {
           VectorFileSinkDesc vectorFileSinkDesc = new VectorFileSinkDesc();
           fileSinkDesc.setVectorDesc(vectorFileSinkDesc);
           vectorOp = OperatorFactory.getVectorOperator(
-              op.getCompilationOpContext(), fileSinkDesc, vContext);
+              op.getCompilationOpContext(), fileSinkDesc, vContext, op);
           isNative = false;
         }
         break;
@@ -3478,7 +3494,7 @@ public class Vectorizer implements PhysicalPlanResolver {
           VectorLimitDesc vectorLimitDesc = new VectorLimitDesc();
           limitDesc.setVectorDesc(vectorLimitDesc);
           vectorOp = OperatorFactory.getVectorOperator(
-              op.getCompilationOpContext(), limitDesc, vContext);
+              op.getCompilationOpContext(), limitDesc, vContext, op);
           isNative = true;
         }
         break;
@@ -3488,7 +3504,7 @@ public class Vectorizer implements PhysicalPlanResolver {
           VectorAppMasterEventDesc vectorEventDesc = new VectorAppMasterEventDesc();
           eventDesc.setVectorDesc(vectorEventDesc);
           vectorOp = OperatorFactory.getVectorOperator(
-              op.getCompilationOpContext(), eventDesc, vContext);
+              op.getCompilationOpContext(), eventDesc, vContext, op);
           isNative = true;
         }
         break;
@@ -3498,7 +3514,7 @@ public class Vectorizer implements PhysicalPlanResolver {
           VectorSparkHashTableSinkDesc vectorSparkHashTableSinkDesc = new VectorSparkHashTableSinkDesc();
           sparkHashTableSinkDesc.setVectorDesc(vectorSparkHashTableSinkDesc);
           vectorOp = OperatorFactory.getVectorOperator(
-              op.getCompilationOpContext(), sparkHashTableSinkDesc, vContext);
+              op.getCompilationOpContext(), sparkHashTableSinkDesc, vContext, op);
           isNative = true;
         }
         break;
@@ -3508,7 +3524,7 @@ public class Vectorizer implements PhysicalPlanResolver {
           VectorSparkPartitionPruningSinkDesc vectorSparkPartitionPruningSinkDesc = new VectorSparkPartitionPruningSinkDesc();
           sparkPartitionPruningSinkDesc.setVectorDesc(vectorSparkPartitionPruningSinkDesc);
           vectorOp = OperatorFactory.getVectorOperator(
-              op.getCompilationOpContext(), sparkPartitionPruningSinkDesc, vContext);
+              op.getCompilationOpContext(), sparkPartitionPruningSinkDesc, vContext, op);
           isNative = true;
         }
         break;

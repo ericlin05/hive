@@ -40,6 +40,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.lang3.CharEncoding;
+import org.apache.hadoop.hive.common.LogUtils;
 import org.apache.hadoop.hive.common.metrics.common.Metrics;
 import org.apache.hadoop.hive.common.metrics.common.MetricsConstant;
 import org.apache.hadoop.hive.common.metrics.common.MetricsFactory;
@@ -172,8 +173,9 @@ public class SQLOperation extends ExecuteStatementOperation {
           @Override
           public void run() {
             try {
+              String queryId = confOverlay.get(HiveConf.ConfVars.HIVEQUERYID.varname);
               LOG.info("Query timed out after: " + queryTimeout
-                  + " seconds. Cancelling the execution now.");
+                  + " seconds. Cancelling the execution now: " + queryId);
               SQLOperation.this.cancel(OperationState.TIMEDOUT);
             } catch (HiveSQLException e) {
               LOG.error("Error cancelling the query after timeout: " + queryTimeout + " seconds", e);
@@ -337,9 +339,7 @@ public class SQLOperation extends ExecuteStatementOperation {
           // TODO: can this result in cross-thread reuse of session state?
           SessionState.setCurrentSessionState(parentSessionState);
           PerfLogger.setPerfLogger(parentPerfLogger);
-          // Set current OperationLog in this async thread for keeping on saving query log.
-          registerCurrentOperationLog();
-          registerLoggingContext();
+          LogUtils.registerLoggingContext(queryState.getConf());
           try {
             if (asyncPrepare) {
               prepare(queryState);
@@ -350,8 +350,7 @@ public class SQLOperation extends ExecuteStatementOperation {
             setOperationException(e);
             LOG.error("Error running hive query: ", e);
           } finally {
-            unregisterLoggingContext();
-            unregisterOperationLog();
+            LogUtils.unregisterLoggingContext();
           }
           return null;
         }
@@ -392,18 +391,6 @@ public class SQLOperation extends ExecuteStatementOperation {
     }
   }
 
-  private void registerCurrentOperationLog() {
-    if (isOperationLogEnabled) {
-      if (operationLog == null) {
-        LOG.warn("Failed to get current OperationLog object of Operation: " +
-            getHandle().getHandleIdentifier());
-        isOperationLogEnabled = false;
-        return;
-      }
-      OperationLog.setCurrentOperationLog(operationLog);
-    }
-  }
-
   private synchronized void cleanup(OperationState state) throws HiveSQLException {
     setState(state);
 
@@ -411,8 +398,11 @@ public class SQLOperation extends ExecuteStatementOperation {
       Future<?> backgroundHandle = getBackgroundHandle();
       if (backgroundHandle != null) {
         boolean success = backgroundHandle.cancel(true);
+        String queryId = confOverlay.get(HiveConf.ConfVars.HIVEQUERYID.varname);
         if (success) {
-          LOG.info("The running operation has been successfully interrupted.");
+          LOG.info("The running operation has been successfully interrupted: " + queryId);
+        } else if (state == OperationState.CANCELED) {
+          LOG.info("The running operation could not be cancelled, typically because it has already completed normally: " + queryId);
         }
       }
     }
@@ -439,8 +429,16 @@ public class SQLOperation extends ExecuteStatementOperation {
 
   @Override
   public void cancel(OperationState stateAfterCancel) throws HiveSQLException {
+    String queryId = null;
+    if (stateAfterCancel == OperationState.CANCELED) {
+      queryId = confOverlay.get(HiveConf.ConfVars.HIVEQUERYID.varname);
+      LOG.info("Cancelling the query execution: " + queryId);
+    }
     cleanup(stateAfterCancel);
     cleanupOperationLog();
+    if (stateAfterCancel == OperationState.CANCELED) {
+      LOG.info("Successfully cancelled the query: " + queryId);
+    }
   }
 
   @Override

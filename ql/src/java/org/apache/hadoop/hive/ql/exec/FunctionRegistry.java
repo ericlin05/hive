@@ -457,6 +457,7 @@ public final class FunctionRegistry {
     system.registerGenericUDF("struct", GenericUDFStruct.class);
     system.registerGenericUDF("named_struct", GenericUDFNamedStruct.class);
     system.registerGenericUDF("create_union", GenericUDFUnion.class);
+    system.registerGenericUDF("extract_union", GenericUDFExtractUnion.class);
 
     system.registerGenericUDF("case", GenericUDFCase.class);
     system.registerGenericUDF("when", GenericUDFWhen.class);
@@ -1485,6 +1486,20 @@ public final class FunctionRegistry {
    */
   public static boolean isOpNot(ExprNodeDesc desc) {
     return GenericUDFOPNot.class == getGenericUDFClassFromExprDesc(desc);
+  }
+
+  /**
+   * Returns whether the fn is an exact equality comparison.
+   */
+  public static boolean isEq(GenericUDF fn) {
+    return fn instanceof GenericUDFOPEqual;
+  }
+
+  /**
+   * Returns whether the fn is an exact non-equality comparison.
+   */
+  public static boolean isNeq(GenericUDF fn) {
+    return fn instanceof GenericUDFOPNotEqual;
   }
 
   /**

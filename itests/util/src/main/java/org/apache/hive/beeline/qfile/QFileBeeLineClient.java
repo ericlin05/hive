@@ -16,13 +16,12 @@
  * limitations under the License.
  */
 
-package org.apache.hive.beeline.qfile;
-
-import org.apache.hive.beeline.BeeLine;
+package org.apache.hive.beeline;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.sql.SQLException;
 
 /**
  * QFile test client using BeeLine. It can be used to submit a list of command strings, or a QFile.
@@ -45,29 +44,29 @@ public class QFileBeeLineClient implements AutoCloseable {
           "!set shownestederrs true",
           "!set showwarnings true",
           "!set showelapsedtime false",
+          "!set trimscripts false",
           "!set maxwidth -1",
           "!connect " + jdbcUrl + " " + username + " " + password + " " + jdbcDriver
         });
   }
 
-  public boolean execute(String[] commands, File resultFile) {
-    boolean hasErrors = false;
+  public void execute(String[] commands, File resultFile) throws SQLException {
     beeLine.runCommands(
         new String[] {
           "!set outputformat csv",
           "!record " + resultFile.getAbsolutePath()
         });
 
-    if (commands.length != beeLine.runCommands(commands)) {
-      hasErrors = true;
+    int lastSuccessfulCommand = beeLine.runCommands(commands);
+    if (commands.length != lastSuccessfulCommand) {
+      throw new SQLException("Error executing SQL command: " + commands[lastSuccessfulCommand]);
     }
 
     beeLine.runCommands(new String[] {"!record"});
-    return !hasErrors;
   }
 
-  private void beforeExecute(QFile qFile) {
-    assert(execute(
+  private void beforeExecute(QFile qFile) throws SQLException {
+    execute(
         new String[] {
           "USE default;",
           "SHOW TABLES;",
@@ -75,27 +74,23 @@ public class QFileBeeLineClient implements AutoCloseable {
           "CREATE DATABASE `" + qFile.getName() + "`;",
           "USE `" + qFile.getName() + "`;"
         },
-        qFile.getInfraLogFile()));
+        qFile.getBeforeExecuteLogFile());
   }
 
-  private void afterExecute(QFile qFile) {
-    assert(execute(
+  private void afterExecute(QFile qFile) throws SQLException {
+    execute(
         new String[] {
           "USE default;",
           "DROP DATABASE IF EXISTS `" + qFile.getName() + "` CASCADE;",
         },
-        qFile.getInfraLogFile()));
+        qFile.getAfterExecuteLogFile());
   }
 
-  public boolean execute(QFile qFile) {
+  public void execute(QFile qFile) throws SQLException, IOException {
     beforeExecute(qFile);
-    boolean result = execute(
-        new String[] {
-          "!run " + qFile.getInputFile().getAbsolutePath()
-        },
-        qFile.getRawOutputFile());
+    String[] commands = beeLine.getCommands(qFile.getInputFile());
+    execute(qFile.filterCommands(commands), qFile.getRawOutputFile());
     afterExecute(qFile);
-    return result;
   }
 
   public void close() {

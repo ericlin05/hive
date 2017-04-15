@@ -645,9 +645,21 @@ public class Driver implements CommandProcessor {
 
 
   private int handleInterruption(String msg) {
+    return handleInterruptionWithHook(msg, null, null);
+  }
+
+  private int handleInterruptionWithHook(String msg, HookContext hookContext,
+      PerfLogger perfLogger) {
     SQLState = "HY008";  //SQLState for cancel operation
     errorMessage = "FAILED: command has been interrupted: " + msg;
     console.printError(errorMessage);
+    if (hookContext != null) {
+      try {
+        invokeFailureHooks(perfLogger, hookContext, errorMessage, null);
+      } catch (Exception e) {
+        LOG.warn("Caught exception attempting to invoke Failure Hooks", e);
+      }
+    }
     return 1000;
   }
 
@@ -1305,14 +1317,16 @@ public class Driver implements CommandProcessor {
 
     final ReentrantLock compileLock = tryAcquireCompileLock(isParallelEnabled,
       command);
+
+    if (metrics != null) {
+      metrics.decrementCounter(MetricsConstant.WAITING_COMPILE_OPS, 1);
+    }
+
     if (compileLock == null) {
       return ErrorMsg.COMPILE_LOCK_TIMED_OUT.getErrorCode();
     }
 
     try {
-      if (metrics != null) {
-        metrics.decrementCounter(MetricsConstant.WAITING_COMPILE_OPS, 1);
-      }
       ret = compile(command, true, deferClose);
     } finally {
       compileLock.unlock();
@@ -1373,11 +1387,6 @@ public class Driver implements CommandProcessor {
       LOG.debug("Waiting to acquire compile lock: " + command);
     }
 
-    OperationLog ol = OperationLog.getCurrentOperationLog();
-    if (ol != null) {
-      ol.writeOperationLog(LoggingLevel.EXECUTION, "Waiting to acquire compile lock.\n");
-    }
-
     if (maxCompileLockWaitTime > 0) {
       try {
         if(!compileLock.tryLock(maxCompileLockWaitTime, TimeUnit.SECONDS)) {
@@ -1397,9 +1406,6 @@ public class Driver implements CommandProcessor {
     }
 
     LOG.debug(lockAcquiredMsg);
-    if (ol != null) {
-        ol.writeOperationLog(LoggingLevel.EXECUTION, lockAcquiredMsg + "\n");
-    }
     return compileLock;
   }
 
@@ -1804,7 +1810,7 @@ public class Driver implements CommandProcessor {
       // The main thread polls the TaskRunners to check if they have finished.
 
       if (isInterrupted()) {
-        return handleInterruption("before running tasks.");
+        return handleInterruptionWithHook("before running tasks.", hookContext, perfLogger);
       }
       DriverContext driverCxt = new DriverContext(ctx);
       driverCxt.prepare(plan);
@@ -1854,7 +1860,7 @@ public class Driver implements CommandProcessor {
 
         int exitVal = result.getExitVal();
         if (isInterrupted()) {
-          return handleInterruption("when checking the execution result.");
+          return handleInterruptionWithHook("when checking the execution result.", hookContext, perfLogger);
         }
         if (exitVal != 0) {
           if (tsk.ifRetryCmdWhenFail()) {
@@ -1879,6 +1885,9 @@ public class Driver implements CommandProcessor {
 
           } else {
             setErrorMsgAndDetail(exitVal, result.getTaskError(), tsk);
+            if (driverCxt.isShutdown()) {
+              errorMessage = "FAILED: Operation cancelled. " + errorMessage;
+            }
             invokeFailureHooks(perfLogger, hookContext,
               errorMessage + Strings.nullToEmpty(tsk.getDiagnosticsMessage()), result.getTaskError());
             SQLState = "08S01";
@@ -1967,7 +1976,7 @@ public class Driver implements CommandProcessor {
     } catch (Throwable e) {
       executionError = true;
       if (isInterrupted()) {
-        return handleInterruption("during query execution: \n" + e.getMessage());
+        return handleInterruptionWithHook("during query execution: \n" + e.getMessage(), hookContext, perfLogger);
       }
 
       ctx.restoreOriginalTracker();
@@ -2092,13 +2101,6 @@ public class Driver implements CommandProcessor {
     }
     String warning = HiveConf.generateMrDeprecationWarning();
     LOG.warn(warning);
-    warning = "WARNING: " + warning;
-    console.printInfo(warning);
-    // Propagate warning to beeline via operation log.
-    OperationLog ol = OperationLog.getCurrentOperationLog();
-    if (ol != null) {
-      ol.writeOperationLog(LoggingLevel.EXECUTION, warning + "\n");
-    }
   }
 
   private void setErrorMsgAndDetail(int exitVal, Throwable downstreamError, Task tsk) {
@@ -2173,7 +2175,6 @@ public class Driver implements CommandProcessor {
       if (LOG.isInfoEnabled()){
         LOG.info("Starting task [" + tsk + "] in parallel");
       }
-      tskRun.setOperationLog(OperationLog.getCurrentOperationLog());
       tskRun.start();
     } else {
       if (LOG.isInfoEnabled()){

@@ -2,24 +2,24 @@ PREHOOK: query: DESCRIBE FUNCTION collect_set
 PREHOOK: type: DESCFUNCTION
 POSTHOOK: query: DESCRIBE FUNCTION collect_set
 POSTHOOK: type: DESCFUNCTION
-collect_set(x) - Returns a set of objects with duplicate elements eliminated
+collect_set(x, y) - Returns a set of objects with duplicate elements eliminated
 PREHOOK: query: DESCRIBE FUNCTION EXTENDED collect_set
 PREHOOK: type: DESCFUNCTION
 POSTHOOK: query: DESCRIBE FUNCTION EXTENDED collect_set
 POSTHOOK: type: DESCFUNCTION
-collect_set(x) - Returns a set of objects with duplicate elements eliminated
+collect_set(x, y) - Returns a set of objects with duplicate elements eliminated
 Function class:org.apache.hadoop.hive.ql.udf.generic.GenericUDAFCollectSet
 Function type:BUILTIN
 PREHOOK: query: DESCRIBE FUNCTION collect_list
 PREHOOK: type: DESCFUNCTION
 POSTHOOK: query: DESCRIBE FUNCTION collect_list
 POSTHOOK: type: DESCFUNCTION
-collect_list(x) - Returns a list of objects with duplicates
+collect_list(x, y) - Returns a list of objects with duplicates
 PREHOOK: query: DESCRIBE FUNCTION EXTENDED collect_list
 PREHOOK: type: DESCFUNCTION
 POSTHOOK: query: DESCRIBE FUNCTION EXTENDED collect_list
 POSTHOOK: type: DESCFUNCTION
-collect_list(x) - Returns a list of objects with duplicates
+collect_list(x, y) - Returns a list of objects with duplicates
 Function class:org.apache.hadoop.hive.ql.udf.generic.GenericUDAFCollectList
 Function type:BUILTIN
 PREHOOK: query: SELECT key, collect_set(value)
